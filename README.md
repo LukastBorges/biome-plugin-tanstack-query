@@ -26,7 +26,7 @@ Biome does not run ESLint plugins. It does run plugins written in [GritQL](https
 
 | `biome-plugin-tanstack-query` | Mirrors `@tanstack/eslint-plugin-query` | Requires `@biomejs/biome` |
 | ----------------------------- | --------------------------------------- | ------------------------- |
-| unreleased | `5.104.1` | `>= 2.5.2` |
+| `1.0.0` and later | `5.104.1` | `>= 2.5.2` |
 
 - Each row covers the plugin releases that mirror the same upstream version. The table is updated automatically on every release (`scripts/sync-version.js`).
 - The mirrored version is recorded in [`package.json#upstream`](package.json). A [daily job](.github/workflows/upstream-check.yml) opens an issue when TanStack publishes a newer release, with a diff of new, removed and changed rules (see [Staying in sync](#staying-in-sync-with-upstream)).
