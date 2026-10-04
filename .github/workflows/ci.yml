@@ -95,15 +95,11 @@ jobs:
         run: npm test
 
   biome-compat:
-    name: Biome ${{ matrix.biome }}
+    # The main `test` job runs on the exact Biome version pinned in
+    # package.json (kept current by Dependabot); this job covers the floor.
+    name: Biome minimum
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        # `minimum` is read from peerDependencies["@biomejs/biome"] so the
-        # declared range and the tested floor can never drift apart.
-        biome: [minimum, latest]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -115,44 +111,27 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            .github/biome-minimum/package-lock.json
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Biome ${{ matrix.biome }}
-        env:
-          TARGET: ${{ matrix.biome }}
-        run: |
-          case "$TARGET" in
-            minimum)
-              range=$(node -p "require('./package.json').peerDependencies['@biomejs/biome']")
-              if [[ ! "$range" =~ ^\>=[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-                echo "::error file=package.json::peerDependencies[\"@biomejs/biome\"] must be a plain '>=x.y.z' range, found '$range'"
-                exit 1
-              fi
-              version="${BASH_REMATCH[1]}"
-              ;;
-            latest)
-              version=$(npm view @biomejs/biome@latest version)
-              ;;
-          esac
-          # Replace the locked dev version in place (lockfile untouched): the
-          # harness resolves `@biomejs/biome` exactly like a consumer's install.
-          #
-          # Do NOT point the BIOME_BINARY variable at another install's
-          # bin/biome instead: Biome's own npm shim reads BIOME_BINARY as the
-          # path of the *native* executable, so the shim would re-spawn itself
-          # forever (a fork bomb that only ends with the job timeout).
-          npm install --no-save --ignore-scripts --no-audit --no-fund "@biomejs/biome@$version"
-          installed=$(npx --no-install biome --version)
-          echo "Testing against Biome $version ($installed)" | tee -a "$GITHUB_STEP_SUMMARY"
-          if [[ "$installed" != "Version: $version" ]]; then
-            echo "::error::expected Biome $version, found '$installed'"
-            exit 1
-          fi
+      # A committed lockfile pins the minimum Biome version (and its native
+      # binaries) by integrity hash. tests/biome-minimum.test.ts keeps it equal
+      # to the peerDependencies floor.
+      - name: Install the minimum supported Biome
+        run: npm ci --prefix .github/biome-minimum --ignore-scripts --no-audit --no-fund
 
       - name: Test
-        run: npm test
+        env:
+          # Not BIOME_BINARY: Biome's own npm launcher reads that variable as the
+          # path of the native executable and would re-spawn itself forever.
+          BIOME_PLUGIN_TEST_BIN: ${{ github.workspace }}/.github/biome-minimum/node_modules/@biomejs/biome/bin/biome
+        run: |
+          echo "Testing against $(node "$BIOME_PLUGIN_TEST_BIN" --version)" | tee -a "$GITHUB_STEP_SUMMARY"
+          npm test
 
   package:
     name: Package contents

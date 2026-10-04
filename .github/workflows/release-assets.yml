@@ -1,0 +1,48 @@
+# Attaches the signed artifacts of an already-published version (tarball, SLSA
+# provenance and npm publish attestation, see scripts/release-assets.js) to its
+# GitHub release. New releases get them automatically from semantic-release;
+# this is for backfilling or repairing an existing release.
+name: Release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published version, without the leading "v" (e.g. 1.0.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  attach:
+    name: Attach signed assets to v${{ inputs.version }}
+    if: github.repository == 'LukastBorges/biome-plugin-tanstack-query'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # upload release assets
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      # Zero-dependency script: no `npm ci` needed.
+      - name: Download and verify the signed artifacts
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/release-assets.js "$VERSION"
+
+      - name: Upload them to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: gh release upload "v$VERSION" dist/* --clobber --repo "$GITHUB_REPOSITORY"

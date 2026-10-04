@@ -30,7 +30,7 @@ Biome does not run ESLint plugins. It does run plugins written in [GritQL](https
 
 - Each row covers the plugin releases that mirror the same upstream version. The table is updated automatically on every release (`scripts/sync-version.js`).
 - The mirrored version is recorded in [`package.json#upstream`](package.json). A [daily job](.github/workflows/upstream-check.yml) opens an issue when TanStack publishes a newer release, with a diff of new, removed and changed rules (see [Staying in sync](#staying-in-sync-with-upstream)).
-- **Biome 2.5.2** is the tested minimum. CI runs the full suite against that version and against the latest Biome release. In 2.5.0 and 2.5.1 several rules fail to compile, and earlier versions cannot express plugin fixes.
+- **Biome 2.5.2** is the tested minimum. CI runs the full suite against that version and against the latest Biome release (the exact dev dependency, kept current by Dependabot). In 2.5.0 and 2.5.1 several rules fail to compile, and earlier versions cannot express plugin fixes.
 
 ## Installation
 
@@ -244,8 +244,20 @@ This list is exactly the `recommended` preset. It also avoids the [preset fix ca
   npm audit signatures
   ```
 
+- Every [GitHub release](https://github.com/LukastBorges/biome-plugin-tanstack-query/releases) carries the published tarball and its Sigstore-signed SLSA provenance (`.tgz.sigstore.json`, `.intoto.jsonl`), so you can verify a download without npm:
+
+  ```sh
+  cosign verify-blob-attestation \
+    --bundle biome-plugin-tanstack-query-1.0.0.tgz.sigstore.json \
+    --type slsaprovenance1 \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    --certificate-identity https://github.com/LukastBorges/biome-plugin-tanstack-query/.github/workflows/release.yml@refs/heads/main \
+    biome-plugin-tanstack-query-1.0.0.tgz
+  ```
+
 - The tarball contains only `rules/*.grit`, `README.md`, `LICENSE` and `package.json`. There is no JavaScript, and there are no install scripts and no dependencies. CI enforces this with [`scripts/check-pack.js`](scripts/check-pack.js).
-- Actions in the workflows are pinned to commit SHAs and updated by Dependabot.
+- Actions in the workflows are pinned to commit SHAs and updated by Dependabot. CodeQL scans the scripts and the workflows, and the [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/LukastBorges/biome-plugin-tanstack-query) runs weekly.
+- Known advisories in development-only release tooling that have no upstream fix are triaged, with reasons and expiry dates, in [`osv-scanner.toml`](osv-scanner.toml).
 - Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 ## Staying in sync with upstream

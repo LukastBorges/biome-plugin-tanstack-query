@@ -1,0 +1,8 @@
+{
+  "name": "biome-minimum",
+  "private": true,
+  "description": "The minimum supported Biome version (package.json peerDependencies floor), installed by CI with `npm ci` and tested via BIOME_PLUGIN_TEST_BIN. Keep the version equal to the floor: tests/biome-minimum.test.ts enforces it.",
+  "devDependencies": {
+    "@biomejs/biome": "2.5.2"
+  }
+}

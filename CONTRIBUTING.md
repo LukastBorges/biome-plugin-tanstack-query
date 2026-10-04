@@ -170,15 +170,20 @@ Always verify a construct with a probe before relying on it.
 ### Testing against another Biome version
 
 CI runs the suite against the minimum supported Biome version (the
-`peerDependencies` floor) and the latest release. To do the same locally:
+`peerDependencies` floor), installed from the committed lockfile in
+`.github/biome-minimum/`, and against the exact version in `package.json`. To
+test the floor locally:
 
 ```sh
-npm install --no-save @biomejs/biome@2.5.2   # lockfile stays untouched
-npm test
-npm ci                                       # back to the locked version
+npm ci --prefix .github/biome-minimum --ignore-scripts
+BIOME_PLUGIN_TEST_BIN=.github/biome-minimum/node_modules/@biomejs/biome/bin/biome npm test
 ```
 
-Alternatively, point `BIOME_PLUGIN_TEST_BIN` at another install's
+When you raise the floor, update `.github/biome-minimum/package.json` to the
+same version and run `npm install --package-lock-only` in that directory;
+`tests/biome-minimum.test.ts` fails until both match.
+
+`BIOME_PLUGIN_TEST_BIN` can point at any install's
 `node_modules/@biomejs/biome/bin/biome` script. Do **not** use `BIOME_BINARY`
 for this: Biome's npm launcher reads that variable as the path of the native
 executable and would re-spawn itself endlessly (the test harness strips it from

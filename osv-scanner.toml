@@ -1,0 +1,81 @@
+# Triaged advisories in development-only release tooling (read by OSV-Scanner
+# and the OpenSSF Scorecard "Vulnerabilities" check).
+#
+# None of these packages ship to users: the published tarball contains only
+# .grit files. They run only inside the release job on an ephemeral,
+# single-tenant GitHub runner, on inputs from this repository.
+#
+# Each entry has no upstream fix today:
+#   - braces@3.0.3 (via micromatch, semantic-release) is the latest release.
+#   - the others are bundled inside the `npm` CLI package that
+#     @semantic-release/npm depends on (bundled dependencies cannot be
+#     overridden); npm 11.x and 12.2.0 still bundle the affected versions.
+#
+# `ignoreUntil` forces a re-review: when an entry expires, check `npm audit`
+# and either bump the tooling or renew the entry with an updated reason.
+
+# braces (micromatch): stack exhaustion on deeply nested brace patterns.
+# Only matches the release config's own branch/asset globs.
+[[IgnoredVulns]]
+id = "GHSA-vfj7-8cjw-p6xm"
+ignoreUntil = 2027-01-04
+reason = "braces@3.0.3 has no fix; only expands this repository's own release globs (no attacker-controlled patterns)."
+
+# brace-expansion (bundled in npm's minimatch): DoS on crafted patterns.
+[[IgnoredVulns]]
+id = "GHSA-q2hr-2g5m-vwhr"
+ignoreUntil = 2027-01-04
+reason = "Bundled in the npm CLI; only processes this repository's own package.json globs in CI."
+
+[[IgnoredVulns]]
+id = "GHSA-qhr7-859c-m2p7"
+ignoreUntil = 2027-01-04
+reason = "Bundled in the npm CLI; only processes this repository's own package.json globs in CI."
+
+[[IgnoredVulns]]
+id = "GHSA-6j4f-fj2g-mc7p"
+ignoreUntil = 2027-01-04
+reason = "Bundled in the npm CLI; only processes this repository's own package.json globs in CI."
+
+# http-cache-semantics (bundled in npm): cross-user disclosure from a shared cache.
+[[IgnoredVulns]]
+id = "GHSA-ch52-4w7c-c8xp"
+ignoreUntil = 2027-01-04
+reason = "Bundled in the npm CLI; the release job runs on a single-tenant ephemeral runner with no shared HTTP cache."
+
+# ip-address (bundled in npm via socks-proxy-agent): SSRF classifier gaps.
+[[IgnoredVulns]]
+id = "GHSA-rpw4-54j3-4h4q"
+ignoreUntil = 2027-01-04
+reason = "Bundled in the npm CLI; only reachable through a SOCKS proxy, which the release job never configures."
+
+[[IgnoredVulns]]
+id = "GHSA-2vr4-cq9g-pvrc"
+ignoreUntil = 2027-01-04
+reason = "Bundled in the npm CLI; only reachable through a SOCKS proxy, which the release job never configures."
+
+[[IgnoredVulns]]
+id = "GHSA-j6r3-76f7-8jcv"
+ignoreUntil = 2027-01-04
+reason = "Bundled in the npm CLI; only reachable through a SOCKS proxy, which the release job never configures."
+
+[[IgnoredVulns]]
+id = "GHSA-h3mg-xc3c-68pw"
+ignoreUntil = 2027-01-04
+reason = "Bundled in the npm CLI; only reachable through a SOCKS proxy, which the release job never configures."
+
+# undici (bundled in npm's node-gyp): WebSocket DoS and retry-interceptor issues.
+[[IgnoredVulns]]
+id = "GHSA-3wwx-pv8p-q78v"
+ignoreUntil = 2027-01-04
+reason = "Bundled in npm's node-gyp, which never runs (no native modules; WebSockets unused)."
+
+[[IgnoredVulns]]
+id = "GHSA-r53p-7pc4-xj5r"
+ignoreUntil = 2027-01-04
+reason = "Bundled in npm's node-gyp, which never runs (no native modules; retry interceptor unused)."
+
+[[IgnoredVulns]]
+id = "GHSA-rfgv-xxqx-mfg5"
+ignoreUntil = 2027-01-04
+reason = "Bundled in npm's node-gyp, which never runs (no native modules; WebSockets unused)."

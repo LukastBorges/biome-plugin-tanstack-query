@@ -150,7 +150,8 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "node scripts/sync-version.js ${nextRelease.version} ${lastRelease.version}"
+        "prepareCmd": "node scripts/sync-version.js ${nextRelease.version} ${lastRelease.version}",
+        "publishCmd": "node scripts/release-assets.js ${nextRelease.version}"
       }
     ],
     [
@@ -171,7 +172,25 @@
     [
       "@semantic-release/github",
       {
-        "failTitle": "The automated release is failing"
+        "failTitle": "The automated release is failing",
+        "assets": [
+          {
+            "path": "dist/*.tgz",
+            "label": "npm package tarball"
+          },
+          {
+            "path": "dist/*.tgz.sigstore.json",
+            "label": "SLSA provenance (Sigstore bundle)"
+          },
+          {
+            "path": "dist/*.intoto.jsonl",
+            "label": "SLSA provenance (in-toto DSSE envelope)"
+          },
+          {
+            "path": "dist/*.publish.sigstore.json",
+            "label": "npm publish attestation (Sigstore bundle)"
+          }
+        ]
       }
     ]
   ]
