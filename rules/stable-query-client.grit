@@ -1,0 +1,166 @@
+// @tanstack/query/stable-query-client
+// Upstream: https://tanstack.com/query/latest/docs/eslint/stable-query-client
+// Flags `const client = new QueryClient()` (QueryClient imported from @tanstack/react-query) declared
+// directly in the body of a non-async React component or custom hook, i.e. a new client on every render.
+// Limitations vs ESLint: deliberately narrower. Declarations inside a nested function (lazy useState
+// initializer, effect, callback) are never reported, hook names must look like React hooks (`use`,
+// `useX`), a component that declares its own `QueryClient` binding is skipped, and upstream's
+// `React.useState` autofix is not offered.
+language js
+
+// Entry point. Anchors on the `new QueryClient(...)` expression, which is also this rule's span:
+//
+//   function App() {
+//     const queryClient = new QueryClient()
+//                         ^^^^^^^^^^^^^^^^^
+//
+// Anchoring on the rare `new QueryClient` node (instead of on every variable declarator) keeps the
+// rule cheap: the checks below only run for those few nodes, cheapest first. Every check walks up
+// the tree (`within`) except the import lookup, which scans the module's top-level statements.
+pattern tanstack_query_stable_query_client() {
+  // `new QueryClient(...)` or `new QueryClient` (without an argument list). Like upstream, the callee
+  // must be the bare identifier `QueryClient`: `new RQ.QueryClient()` and `new MyClient()` (an alias)
+  // are not reported.
+  JsNewExpression(callee = `QueryClient`) as $client where {
+    // Upstream requires the `new` expression to BE the initializer of a variable declarator (ESTree
+    // has no parenthesized-expression node, so `= (new QueryClient())` counts too). Anything wrapped
+    // around it (`useState(() => new QueryClient())`, `new QueryClient() as X`, `a ?? new
+    // QueryClient()`, `client = new QueryClient()`) is not reported. `$client` is already bound
+    // here, so `expression = $client` only accepts the declarator that directly holds this node.
+    $client <: within JsVariableDeclarator(initializer = JsInitializerClause(expression = or {
+      $client,
+      JsParenthesizedExpression(expression = $client)
+    })),
+
+    // The declaration must sit in a function whose name says it is a component or a hook ...
+    $client <: within tanstack_query_stable_query_client_component_or_hook(),
+
+    // ... and directly in it: when ANOTHER function sits between the component and the declaration
+    // (a lazy `useState(() => { const client = new QueryClient(); ... })` initializer, an effect, an
+    // event handler, a nested helper), the client is not created on every render, so the rule stays
+    // silent. (Upstream inspects the OUTERMOST function only and reports these.) The component is
+    // never nested itself, so any function-like ancestor that is nested is one of those in-between
+    // functions.
+    $client <: not within tanstack_query_stable_query_client_function_like() as $inner where {
+      $inner <: within tanstack_query_stable_query_client_function_boundary()
+    },
+
+    // Upstream only fires for the QueryClient of @tanstack/react-query (see detectTanstackQueryImports
+    // + isSpecificTanstackQueryImport): the module must import a value binding named `QueryClient`
+    // from exactly "@tanstack/react-query". Imports can only appear at the top level, so `some` over
+    // the module items is enough (no deep `contains`). The `some` is applied to the field directly
+    // instead of binding the item list to a variable: binding a node that large makes every match
+    // measurably slower in Biome 2.5.15.
+    $client <: within JsModule(items = some tanstack_query_stable_query_client_react_query_import()),
+
+    // No fix. Upstream rewrites the declarator to `[client] = React.useState(() => new QueryClient())`,
+    // which assumes `React` is in scope and can add a hook after an early return or inside an `if`
+    // (breaking the rules of hooks). Biome 2.5.15 also merges every rewrite of a plugin file into the
+    // FIRST diagnostic's fix, so an "unsafe" rewrite would be applied by plain `--write` in the presets
+    // and even on `biome-ignore`d lines. Report-only is the only honest option for now.
+    register_diagnostic(
+      span = $client,
+      message = "@tanstack/query/stable-query-client: QueryClient is not stable. It should be either extracted from the component or wrapped in React.useState. See https://tkdodo.eu/blog/react-query-fa-qs#2-the-queryclient-is-not-stable",
+      severity = "error"
+    )
+  }
+}
+
+// A non-async, non-nested function declaration or named function expression whose name starts like a
+// component (`App`) or a hook (`use`, `useClient`). Mirrors upstream
+// `isValidReactComponentOrHookName(fnAncestor.id)` + the async server-component exemption:
+//   - arrow functions, anonymous functions, `export default function () {}`, and class / object
+//     methods have no `id` upstream and are never treated as components;
+//   - `async function Page() {}` is a React Server Component, which runs once per request, so a new
+//     client there is fine.
+// Upstream's regex is /^(use|[A-Z])/, which also accepts `user()` or `useless()`; this port requires
+// the React hook naming convention instead (`use` alone, or `use` followed by an upper-case letter or
+// a digit).
+pattern tanstack_query_stable_query_client_component_or_hook() {
+  or {
+    JsFunctionDeclaration(id = $name),
+    JsFunctionExpression(id = $name),
+    JsFunctionExportDefaultDeclaration(id = $name)
+  } as $function where {
+    $name <: r"(?:use(?:[A-Z0-9].*)?|[A-Z].*)",
+    // The node text starts with `async` exactly when the function is async (the `export default`
+    // keywords belong to the parent node).
+    $function <: not r"async\b[\s\S]*",
+    // Upstream uses the outermost function ancestor: a component declared inside another function,
+    // an arrow or a method is not considered.
+    $function <: not within tanstack_query_stable_query_client_function_boundary(),
+    // `QueryClient` must still be the imported class: a parameter, variable, function or class named
+    // `QueryClient` inside the component shadows it (upstream reports these, as it has no scope check).
+    $function <: not tanstack_query_stable_query_client_rebinds_query_client()
+  }
+}
+
+// A function that declares its own binding named `QueryClient` anywhere inside it (parameters, local
+// declarations, nested scopes; `{ QueryClient: Renamed }` binds `Renamed` and does not count). Any such
+// binding silences the rule for the whole component, a deliberate over-approximation (no scope
+// analysis): a false negative instead of a false positive.
+//
+// The `contains` walks the whole function, so it is guarded by a text check first: a shadowing binding
+// needs at least a second whole-word `QueryClient` besides the `new QueryClient` itself. Components that
+// mention `QueryClient` once (almost all of them) skip the walk; `useQueryClient` does not count.
+pattern tanstack_query_stable_query_client_rebinds_query_client() {
+  and {
+    r"[\s\S]*\bQueryClient\b[\s\S]*\bQueryClient\b[\s\S]*",
+    contains `QueryClient` as $binding where { $binding <: JsIdentifierBinding() }
+  }
+}
+
+// Any node that starts a new function scope.
+pattern tanstack_query_stable_query_client_function_like() {
+  or {
+    JsFunctionDeclaration(),
+    JsFunctionExpression(),
+    JsFunctionExportDefaultDeclaration(),
+    JsArrowFunctionExpression(),
+    JsMethodClassMember(),
+    JsMethodObjectMember(),
+    JsGetterClassMember(),
+    JsGetterObjectMember(),
+    JsSetterClassMember(),
+    JsSetterObjectMember(),
+    JsConstructorClassMember()
+  }
+}
+
+// The parts of a function that make whatever they contain "nested in a function": every function-like
+// node keeps its statements in a JsFunctionBody, an arrow may have an expression body, and default
+// values live in the parameter lists.
+pattern tanstack_query_stable_query_client_function_boundary() {
+  or {
+    JsFunctionBody(),
+    JsArrowFunctionExpression(),
+    JsParameters(),
+    JsConstructorParameters(),
+    JsSetterClassMember(),
+    JsSetterObjectMember()
+  }
+}
+
+// `import { QueryClient } from "@tanstack/react-query"` (also with other specifiers, a default import
+// in front, or a renamed import whose LOCAL name is `QueryClient`, exactly like upstream). Type-only
+// imports (`import type { QueryClient }`, `import { type QueryClient }`) do not bind a value.
+pattern tanstack_query_stable_query_client_react_query_import() {
+  JsImport(import_clause = or {
+    JsImportNamedClause(named_specifiers = $specifiers, source = $source),
+    JsImportCombinedClause(specifier = $specifiers, source = $source)
+  }) as $import where {
+    $source <: r"['\"]@tanstack/react-query['\"]",
+    $import <: not r"import\s+type\b[\s\S]*",
+    $specifiers <: contains or {
+      JsShorthandNamedImportSpecifier(local_name = $local),
+      JsNamedImportSpecifier(local_name = $local)
+    } as $specifier where {
+      $local <: `QueryClient`,
+      $specifier <: not r"type\b[\s\S]*"
+    }
+  }
+}
+
+// Entry point. The node-kind check in front lets Biome reject every other node
+// cheaply (see scripts/build-index.js); it must cover every node the rule reports on.
+and { JsNewExpression(), tanstack_query_stable_query_client() }

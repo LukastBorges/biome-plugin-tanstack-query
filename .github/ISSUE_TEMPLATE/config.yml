@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/LukastBorges/biome-plugin-tanstack-query/security/advisories/new
+    about: Please report security issues privately, never in a public issue.
+  - name: Biome bug (crash, GritQL engine, configuration)
+    url: https://github.com/biomejs/biome/issues
+    about: Problems that also happen with a plugin that is not from this package belong to Biome.
+  - name: Question about a TanStack Query rule's intent
+    url: https://tanstack.com/query/latest/docs/eslint/eslint-plugin-query
+    about: Each rule mirrors @tanstack/eslint-plugin-query; its documentation explains why the rule exists.

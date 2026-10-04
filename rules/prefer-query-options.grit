@@ -1,0 +1,551 @@
+// @tanstack/query/prefer-query-options
+// Upstream: https://tanstack.com/query/latest/docs/eslint/prefer-query-options
+// Flags inline `queryKey` / `queryFn` options passed to TanStack Query hooks,
+// useQueries entries and QueryClient methods, and hand-typed array query keys
+// passed to QueryClient key/filter methods and `useIsFetching`.
+// Limitations vs ESLint: scope resolution is structural (imports, declarations
+// of enclosing scopes, parameters), and a QueryClient variable is followed
+// through ONE `const x = useQueryClient()` / `new QueryClient()` hop only.
+language js
+
+// Performance notes for readers learning GritQL in Biome:
+// * Bindings made while a node MATCHES stay in the matcher's state for the rest
+//   of the file, and every later matching step pays for them. A check that
+//   only has to succeed is therefore written `$x <: not not check()`: the
+//   double negation keeps the answer and drops the check's bindings. (On a
+//   3,600-line file with 60 reports this alone took lint time from 5.5 s to
+//   2.1 s.)
+// * Matching cost also grows with the TOTAL number of `$variables` declared in
+//   the file, so this rule binds as few as possible: nested patterns are
+//   written inline (`args=[$first, ...]`) instead of binding a node and
+//   matching it in a `where` clause.
+// * A regex over a node's text is a single matching step: it is used as a
+//   cheap pre-filter before structural checks that try many alternatives.
+// * `[..., p, ...]` stops at the first matching list element; `some p` visits
+//   every element. `some` is only used where every element must report.
+// * Recursive patterns WITH parameters overflow Biome's stack, so the few
+//   parameterised helpers that would recurse are unrolled instead.
+// * Matching an already-bound `$x` against another node with the same text
+//   succeeds AND re-binds `$x` to that node. Variables used for name
+//   comparisons are therefore never used as positions (`within`, `span`).
+// * A diagnostic registered while matching a node is discarded if the match
+//   later fails, so checks that can fail come before the reporting pattern.
+
+// Every report starts from a call expression.
+pattern tanstack_query_prefer_query_options() {
+  // The node-kind check comes first and binds nothing: Biome evaluates this
+  // entry point on EVERY node of the file, and rejecting non-calls before any
+  // `or` / pattern call halves the lint time.
+  and {
+    JsCallExpression(),
+    or {
+      tanstack_query_prefer_query_options_hook_call(),
+      tanstack_query_prefer_query_options_client_call()
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. Hooks imported from @tanstack/<framework>-query
+//      useQuery({ queryKey, queryFn })              -> reported on `useQuery`
+//      useIsFetching({ queryKey: ['todos'] })       -> on `queryKey: [...]`
+//      useQueries({ queries: [{ queryKey, ... }] }) -> on a member of each
+//                                                      entry (see inline_entry)
+// ---------------------------------------------------------------------------
+pattern tanstack_query_prefer_query_options_hook_call() {
+  // A plain identifier callee whose first argument is an object literal
+  // (parentheses are transparent: ESTree has no parenthesized nodes).
+  JsCallExpression(
+    callee=JsIdentifierExpression() as $callee,
+    arguments=JsCallArguments(args=[
+      tanstack_query_prefer_query_options_unwrap_parens(JsObjectExpression(members=$members)),
+      ...
+    ])
+  ) where {
+    // queryOptions() / infiniteQueryOptions() are exactly what this rule
+    // recommends, and by far the most common calls that reach this point, so
+    // skip them before anything else.
+    $callee <: not or { "queryOptions", "infiniteQueryOptions" },
+    // Every report needs a `queryKey` / `queryFn` member somewhere in these
+    // options (directly, or in a useQueries entry). A single regex over the
+    // members' text is one matching step, so it rejects the many unrelated
+    // `fn({ ... })` calls (useMutation, useState, useQueries over
+    // queryOptions results, ...) before any structural check.
+    $members <: r"[\s\S]*\b(?:queryKey|queryFn)\b[\s\S]*",
+    // Each branch checks the (cheap) options shape first and only then
+    // resolves the callee to the name it was imported under.
+    or {
+      // useQuery & co. with an inline `queryKey` or `queryFn` property.
+      and {
+        $members <: not not [..., tanstack_query_prefer_query_options_member_named(name=or { "queryKey", "queryFn" }), ...],
+        $callee <: not not tanstack_query_prefer_query_options_tanstack_ref(imported=or {
+          "useQuery",
+          "useInfiniteQuery",
+          "useSuspenseQuery",
+          "useSuspenseInfiniteQuery",
+          "usePrefetchQuery",
+          "usePrefetchInfiniteQuery"
+        }),
+        register_diagnostic(
+          span=$callee,
+          message="@tanstack/query/prefer-query-options: Prefer using queryOptions() or infiniteQueryOptions() to co-locate queryKey and queryFn.",
+          severity="error"
+        )
+      },
+      // useIsFetching({ queryKey: ['todos'] }): a hand-typed key in a filter.
+      and {
+        $members <: [..., tanstack_query_prefer_query_options_inline_key_member() as $member, ...],
+        $callee <: not not tanstack_query_prefer_query_options_tanstack_ref(imported="useIsFetching"),
+        register_diagnostic(
+          span=$member,
+          message="@tanstack/query/prefer-query-options: Prefer referencing a queryKey from a queryOptions() result instead of typing it manually.",
+          severity="error"
+        )
+      },
+      // useQueries({ queries: ... }): every inline entry reports itself (see
+      // inline_entry). Like upstream, only the FIRST `queries` member is
+      // inspected, and only when it is a `queries: value` property (the
+      // `{ queries }` shorthand is not followed).
+      and {
+        $members <: [..., tanstack_query_prefer_query_options_member_named(name="queries") as $queries, ...],
+        $queries <: JsPropertyObjectMember(),
+        $callee <: not not tanstack_query_prefer_query_options_tanstack_ref(imported=or { "useQueries", "useSuspenseQueries" }),
+        $queries <: JsPropertyObjectMember(value=tanstack_query_prefer_query_options_query_entries())
+      }
+    }
+  }
+}
+
+// The `queries` value (upstream getQueryObjects()):
+//   [a, b, c]       -> every object literal element
+//   xs.map(fn)      -> every object literal `fn` returns
+// Optional chains (`xs?.map(fn)`, `data?.ids.map(fn)`) are ESTree
+// ChainExpressions, which upstream does not look into, so they are skipped
+// here too. A parenthesized receiver ends the chain: `(data?.ids ?? []).map(fn)`
+// IS inspected, like upstream.
+pattern tanstack_query_prefer_query_options_query_entries() {
+  tanstack_query_prefer_query_options_unwrap_parens(or {
+    // `some` (not `[..., p, ...]`): EVERY inline element must report.
+    JsArrayExpression(elements=some tanstack_query_prefer_query_options_unwrap_parens(tanstack_query_prefer_query_options_inline_entry())),
+    JsCallExpression(
+      // Checked before the mapper, which reports as it matches.
+      callee=and {
+        JsStaticMemberExpression(member="map"),
+        not tanstack_query_prefer_query_options_optional_chain()
+      },
+      arguments=JsCallArguments(args=[
+        or {
+          JsArrowFunctionExpression(body=tanstack_query_prefer_query_options_mapper_body()),
+          JsFunctionExpression(body=tanstack_query_prefer_query_options_mapper_body())
+        },
+        ...
+      ])
+    )
+  })
+}
+
+// A member access / call that belongs to an optional chain: it is an optional
+// link itself (`a?.b`, `a?.[k]`, `f?.()`), or its object / callee is one
+// (`a?.b.c`, `a?.b!.c`). Parentheses end a chain, so they are not looked
+// through. Biome's GritQL does not expose the `?.` token as a field, so the
+// link is recognised from its text; for `[...]` / `(...)` links that test is
+// approximate and can only err towards "optional" (i.e. a skipped check).
+// No parameters, so it may recurse.
+pattern tanstack_query_prefer_query_options_optional_chain() {
+  or {
+    and { JsStaticMemberExpression(), r"[\s\S]*\?\.\s*#?[\w$]+" },
+    and { JsComputedMemberExpression(), r"[\s\S]*\?\.\s*\[[\s\S]*" },
+    and { JsCallExpression(), r"[\s\S]*\?\.\s*(?:<[\s\S]*>\s*)?\([\s\S]*" },
+    JsStaticMemberExpression(object=tanstack_query_prefer_query_options_optional_chain()),
+    JsComputedMemberExpression(object=tanstack_query_prefer_query_options_optional_chain()),
+    JsCallExpression(callee=tanstack_query_prefer_query_options_optional_chain()),
+    TsNonNullAssertionExpression(expression=tanstack_query_prefer_query_options_optional_chain())
+  }
+}
+
+// Upstream getReturnedObjectExpressions() on a mapper body: an expression
+// body, or the argument of every TOP-LEVEL `return` of a block body (returns
+// nested in `if` / loops are not inspected, like upstream).
+pattern tanstack_query_prefer_query_options_mapper_body() {
+  or {
+    tanstack_query_prefer_query_options_returned_expression(),
+    JsFunctionBody(statements=some JsReturnStatement(argument=tanstack_query_prefer_query_options_returned_expression()))
+  }
+}
+
+// The returned expression itself, and the result branches of `?:`,
+// `&&` / `||` / `??` and `,`. Upstream recurses without limit; this is
+// unrolled to two levels of nesting (see the note on recursion at the top).
+pattern tanstack_query_prefer_query_options_returned_expression() {
+  tanstack_query_prefer_query_options_unwrap_parens(any {
+    tanstack_query_prefer_query_options_inline_entry(),
+    tanstack_query_prefer_query_options_branch_entry(),
+    tanstack_query_prefer_query_options_nested_branch_entry()
+  })
+}
+
+// A `?:` / logical / sequence expression with an inline entry as one of its
+// result branches. `any` (not `or`) so that BOTH branches are inspected and
+// report. (Each alternative calls the reporting pattern itself: a pattern
+// passed in as a parameter gets bound to the first node it matches, so it
+// could not report a second branch.)
+pattern tanstack_query_prefer_query_options_branch_entry() {
+  any {
+    JsConditionalExpression(consequent=tanstack_query_prefer_query_options_unwrap_parens(tanstack_query_prefer_query_options_inline_entry())),
+    JsConditionalExpression(alternate=tanstack_query_prefer_query_options_unwrap_parens(tanstack_query_prefer_query_options_inline_entry())),
+    JsLogicalExpression(left=tanstack_query_prefer_query_options_unwrap_parens(tanstack_query_prefer_query_options_inline_entry())),
+    JsLogicalExpression(right=tanstack_query_prefer_query_options_unwrap_parens(tanstack_query_prefer_query_options_inline_entry())),
+    JsSequenceExpression(left=tanstack_query_prefer_query_options_unwrap_parens(tanstack_query_prefer_query_options_inline_entry())),
+    JsSequenceExpression(right=tanstack_query_prefer_query_options_unwrap_parens(tanstack_query_prefer_query_options_inline_entry()))
+  }
+}
+
+// Same, one level deeper: `a ? (b ? {...} : {...}) : {...}`.
+pattern tanstack_query_prefer_query_options_nested_branch_entry() {
+  any {
+    JsConditionalExpression(consequent=tanstack_query_prefer_query_options_unwrap_parens(tanstack_query_prefer_query_options_branch_entry())),
+    JsConditionalExpression(alternate=tanstack_query_prefer_query_options_unwrap_parens(tanstack_query_prefer_query_options_branch_entry())),
+    JsLogicalExpression(left=tanstack_query_prefer_query_options_unwrap_parens(tanstack_query_prefer_query_options_branch_entry())),
+    JsLogicalExpression(right=tanstack_query_prefer_query_options_unwrap_parens(tanstack_query_prefer_query_options_branch_entry())),
+    JsSequenceExpression(left=tanstack_query_prefer_query_options_unwrap_parens(tanstack_query_prefer_query_options_branch_entry())),
+    JsSequenceExpression(right=tanstack_query_prefer_query_options_unwrap_parens(tanstack_query_prefer_query_options_branch_entry()))
+  }
+}
+
+// An inline useQueries entry: an object literal with a `queryKey` or `queryFn`
+// member. Several entries share one hook callee, so each entry is reported on
+// a node of its own. SPAN OWNERSHIP: exhaustive-deps reports on the queryKey
+// VALUE (which, for shorthand `{ queryKey }`, is the whole member), and
+// no-void-query-fn on the queryFn value / shorthand member. So, in order:
+//   1. `queryKey: value`              -> the whole member
+//   2. `queryFn: value` / `queryFn(){}` -> the whole member
+//   3. shorthand `queryKey`            -> the member (exhaustive-deps needs an
+//      inline queryFn, which case 2 would have picked, so it cannot fire here)
+//   4. only a shorthand `queryFn`      -> the entry object itself
+pattern tanstack_query_prefer_query_options_inline_entry() {
+  JsObjectExpression(members=$members) as $entry where {
+    or {
+      $members <: [..., JsPropertyObjectMember(name="queryKey") as $anchor, ...],
+      $members <: [..., or {
+        JsPropertyObjectMember(name="queryFn"),
+        JsMethodObjectMember(name="queryFn")
+      } as $anchor, ...],
+      $members <: [..., JsShorthandPropertyObjectMember(name="queryKey") as $anchor, ...],
+      and {
+        $members <: [..., JsShorthandPropertyObjectMember(name="queryFn"), ...],
+        $anchor = $entry
+      }
+    },
+    register_diagnostic(
+      span=$anchor,
+      message="@tanstack/query/prefer-query-options: Prefer using queryOptions() or infiniteQueryOptions() to co-locate queryKey and queryFn.",
+      severity="error"
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. QueryClient methods
+//      queryClient.fetchQuery({ queryKey, queryFn })   -> on `queryClient.fetchQuery`
+//      queryClient.getQueryData(['todos'])            -> on `queryClient.getQueryData`
+//      queryClient.invalidateQueries({ queryKey: ['todos'] }) -> on `queryKey: [...]`
+//    The receiver must be `useQueryClient()` / `new QueryClient()` (imported
+//    from a TanStack Query package) or a variable initialised with one.
+//    Every branch checks the method name and argument shape first and only
+//    then resolves the receiver.
+// ---------------------------------------------------------------------------
+pattern tanstack_query_prefer_query_options_client_call() {
+  JsCallExpression(
+    callee=JsStaticMemberExpression(object=$client, member=$method) as $callee,
+    arguments=JsCallArguments(args=[$first, ...])
+  ) where {
+    // One regex step rejects every other method call (`items.map(...)`,
+    // `mutation.mutate(...)`, ...) before the per-list comparisons below.
+    $method <: r"(?:fetchQuery|prefetchQuery|fetchInfiniteQuery|prefetchInfiniteQuery|ensureQueryData|ensureInfiniteQueryData|getQueryData|setQueryData|getQueryState|setQueryDefaults|getQueryDefaults|invalidateQueries|cancelQueries|refetchQueries|removeQueries|resetQueries|isFetching|getQueriesData|setQueriesData)",
+    or {
+      // Methods taking full query options.
+      and {
+        $method <: or {
+          "fetchQuery",
+          "prefetchQuery",
+          "fetchInfiniteQuery",
+          "prefetchInfiniteQuery",
+          "ensureQueryData",
+          "ensureInfiniteQueryData"
+        },
+        $first <: not not tanstack_query_prefer_query_options_unwrap_parens(JsObjectExpression(members=[..., tanstack_query_prefer_query_options_member_named(name=or { "queryKey", "queryFn" }), ...])),
+        $client <: not not tanstack_query_prefer_query_options_client_expression(),
+        register_diagnostic(
+          span=$callee,
+          message="@tanstack/query/prefer-query-options: Prefer using queryOptions() or infiniteQueryOptions() to co-locate queryKey and queryFn.",
+          severity="error"
+        )
+      },
+      // Methods taking a query key as their first argument.
+      and {
+        $method <: or {
+          "getQueryData",
+          "setQueryData",
+          "getQueryState",
+          "setQueryDefaults",
+          "getQueryDefaults"
+        },
+        $first <: not not tanstack_query_prefer_query_options_inline_array(),
+        $client <: not not tanstack_query_prefer_query_options_client_expression(),
+        register_diagnostic(
+          span=$callee,
+          message="@tanstack/query/prefer-query-options: Prefer referencing a queryKey from a queryOptions() result instead of typing it manually.",
+          severity="error"
+        )
+      },
+      // Methods taking query filters.
+      and {
+        $method <: or {
+          "invalidateQueries",
+          "cancelQueries",
+          "refetchQueries",
+          "removeQueries",
+          "resetQueries",
+          "isFetching",
+          "getQueriesData",
+          "setQueriesData"
+        },
+        $first <: tanstack_query_prefer_query_options_unwrap_parens(JsObjectExpression(members=[..., tanstack_query_prefer_query_options_inline_key_member() as $member, ...])),
+        $client <: not not tanstack_query_prefer_query_options_client_expression(),
+        register_diagnostic(
+          span=$member,
+          message="@tanstack/query/prefer-query-options: Prefer referencing a queryKey from a queryOptions() result instead of typing it manually.",
+          severity="error"
+        )
+      }
+    }
+  }
+}
+
+// A QueryClient receiver. Parentheses and `as` / `satisfies` / `<T>` are
+// transparent, like upstream's unwrapTypeAssertions(); `!` is not.
+pattern tanstack_query_prefer_query_options_client_expression() {
+  or {
+    tanstack_query_prefer_query_options_client_source(),
+    JsParenthesizedExpression(expression=tanstack_query_prefer_query_options_client_expression()),
+    TsAsExpression(expression=tanstack_query_prefer_query_options_client_expression()),
+    TsSatisfiesExpression(expression=tanstack_query_prefer_query_options_client_expression()),
+    TsTypeAssertionExpression(expression=tanstack_query_prefer_query_options_client_expression()),
+    tanstack_query_prefer_query_options_client_variable()
+  }
+}
+
+// `useQueryClient()` / `new QueryClient()`, with the callee imported from a
+// TanStack Query package (aliases are resolved).
+pattern tanstack_query_prefer_query_options_client_source() {
+  or {
+    JsParenthesizedExpression(expression=tanstack_query_prefer_query_options_client_source()),
+    TsAsExpression(expression=tanstack_query_prefer_query_options_client_source()),
+    TsSatisfiesExpression(expression=tanstack_query_prefer_query_options_client_source()),
+    TsTypeAssertionExpression(expression=tanstack_query_prefer_query_options_client_source()),
+    JsCallExpression(callee=tanstack_query_prefer_query_options_tanstack_ref(imported="useQueryClient")),
+    JsNewExpression(callee=tanstack_query_prefer_query_options_tanstack_ref(imported="QueryClient"))
+  }
+}
+
+// `queryClient`, where an enclosing module / function body / block DIRECTLY
+// declares `const queryClient = <client source>` (or `let` / `var`) (upstream follows the
+// variable's definition to its initializer with scope analysis), and no scope
+// in between rebinds the name.
+pattern tanstack_query_prefer_query_options_client_variable() {
+  // NOTE: matching a bound variable against another node with the same text
+  // RE-BINDS it to that node in Biome's GritQL. $name is therefore only used
+  // for text comparisons, and the identity-sensitive `within` checks start
+  // from $reference.
+  JsIdentifierExpression(name=$name) as $reference where {
+    $reference <: within or {
+      JsModule(items=$statements),
+      JsFunctionBody(statements=$statements),
+      JsBlockStatement(statements=$statements)
+    } where {
+      $statements <: [..., tanstack_query_prefer_query_options_client_statement($name), ...]
+    },
+    $reference <: not within tanstack_query_prefer_query_options_rebinds($name)
+  }
+}
+
+// `const name = useQueryClient()` / `export const name = new QueryClient()`
+// (`let` / `var` too).
+pattern tanstack_query_prefer_query_options_client_statement($name) {
+  or {
+    JsVariableStatement(declaration=JsVariableDeclaration(declarators=$declarators)),
+    JsExport(export_clause=JsVariableDeclarationClause(declaration=JsVariableDeclaration(declarators=$declarators)))
+  } where {
+    $declarators <: [..., JsVariableDeclarator(id=and { JsIdentifierBinding(), $name }) as $declarator where {
+      // Only declarators named like the receiver reach the import lookup.
+      $declarator <: JsVariableDeclarator(initializer=JsInitializerClause(expression=tanstack_query_prefer_query_options_client_source()))
+    }, ...]
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Import awareness (mirrors utils/detect-react-query-imports.ts)
+// ---------------------------------------------------------------------------
+
+// An identifier reference bound by a value import from `@tanstack/*-query`
+// whose IMPORTED name matches $imported (a name or an `or { ... }` of names),
+// so `import { useQuery as useTQ }` resolves `useTQ` to "useQuery".
+// References shadowed by a parameter or a local declaration of an enclosing
+// scope are rejected, like upstream's scope lookup.
+pattern tanstack_query_prefer_query_options_tanstack_ref($imported) {
+  // $name: text comparisons only; $reference: position (see client_variable).
+  JsIdentifierExpression(name=$name) as $reference where {
+    $reference <: within JsModule(items=$items),
+    // Find THE import declaring this local name (there is at most one), then
+    // check it outside the list pattern: a failed check must not make the
+    // list pattern scan every remaining module item.
+    $items <: [..., JsImport(import_clause=or {
+      JsImportNamedClause(named_specifiers=JsNamedImportSpecifiers(specifiers=$specifiers), source=$source),
+      JsImportCombinedClause(specifier=JsNamedImportSpecifiers(specifiers=$specifiers), source=$source)
+    } as $clause) where {
+      $specifiers <: [..., or {
+        JsNamedImportSpecifier(name=$exported, local_name=$name),
+        JsShorthandNamedImportSpecifier(local_name=$name) as $exported
+      } as $specifier, ...]
+    }, ...],
+    // The IMPORTED name: `useQuery` for both `useQuery` and `useQuery as useTQ`.
+    // (A shorthand specifier's text is the imported name.)
+    $exported <: $imported,
+    // Upstream: source.startsWith('@tanstack/') && source.endsWith('-query').
+    $source <: r"['\"]@tanstack/[^'\"]*-query['\"]",
+    // `import type { ... }` / `import { type X }` are ignored, like upstream
+    // (importKind === 'value').
+    $clause <: not r"type\s[\s\S]*",
+    $specifier <: not r"type\s[\s\S]*",
+    $reference <: not within tanstack_query_prefer_query_options_rebinds($name)
+  }
+}
+
+// A node that introduces its own binding of $name for its descendants (i.e.
+// shadows the binding we resolved):
+//   * a function-like whose parameters bind it (setters included), a catch
+//     clause or `for` head that binds it;
+//   * a named function / class EXPRESSION called $name (its name is visible
+//     inside it: `const B = function useQuery() { useQuery(...) }`);
+//   * a function body, block, `switch`, class static block or TS namespace
+//     that directly declares it;
+//   * a function body containing a `var` of that name anywhere in a nested
+//     block (`var` is hoisted to the function).
+// A `const name = <QueryClient source>` statement is not counted: it is the
+// declaration tanstack_query_prefer_query_options_client_variable() resolves
+// to, and a nested re-declaration of that shape is a QueryClient as well.
+// Module scope is not inspected: a second module-level declaration of an
+// imported or already declared name is a redeclaration error anyway.
+pattern tanstack_query_prefer_query_options_rebinds($name) {
+  or {
+    or {
+      JsFunctionDeclaration(parameters=$part),
+      JsFunctionExpression(parameters=$part),
+      JsArrowFunctionExpression(parameters=$part),
+      JsFunctionExportDefaultDeclaration(parameters=$part),
+      JsMethodObjectMember(parameters=$part),
+      JsMethodClassMember(parameters=$part),
+      JsConstructorClassMember(parameters=$part),
+      JsSetterObjectMember(parameter=$part),
+      JsSetterClassMember(parameter=$part),
+      JsCatchClause(declaration=$part),
+      JsForOfStatement(initializer=$part),
+      JsForInStatement(initializer=$part),
+      JsForStatement(initializer=$part)
+    } where {
+      $part <: contains and { JsIdentifierBinding(), $name }
+    },
+    JsFunctionExpression(id=and { JsIdentifierBinding(), $name }),
+    JsClassExpression(id=and { JsIdentifierBinding(), $name }),
+    or {
+      JsFunctionBody(statements=$statements),
+      JsBlockStatement(statements=$statements),
+      JsStaticInitializationBlockClassMember(statements=$statements),
+      TsModuleBlock(items=$statements),
+      // All clauses of a `switch` share one scope.
+      JsSwitchStatement(cases=some or {
+        JsCaseClause(consequent=$statements),
+        JsDefaultClause(consequent=$statements)
+      })
+    } where {
+      $statements <: [..., and {
+        tanstack_query_prefer_query_options_declares($name),
+        not tanstack_query_prefer_query_options_client_statement($name)
+      }, ...]
+    },
+    // Hoisted `var` (checked last: it scans the whole function body, so a
+    // single regex over the body's text first rules out bodies without `var`).
+    and {
+      JsFunctionBody(),
+      r"[\s\S]*\bvar\s[\s\S]*",
+      JsFunctionBody(statements=contains and {
+        JsVariableStatement(),
+        r"var\s[\s\S]*",
+        tanstack_query_prefer_query_options_declares($name),
+        not tanstack_query_prefer_query_options_client_statement($name)
+      })
+    }
+  }
+}
+
+// A statement that declares $name: `const/let/var` (including destructuring),
+// `function name() {}` or `class name {}`, optionally `export`ed (only
+// possible inside a TS namespace here: module scope is never inspected).
+pattern tanstack_query_prefer_query_options_declares($name) {
+  or {
+    JsVariableStatement(declaration=JsVariableDeclaration(declarators=[..., JsVariableDeclarator(id=contains and { JsIdentifierBinding(), $name }), ...])),
+    JsFunctionDeclaration(id=$name),
+    JsClassDeclaration(id=$name),
+    JsExport(export_clause=or {
+      JsVariableDeclarationClause(declaration=JsVariableDeclaration(declarators=[..., JsVariableDeclarator(id=contains and { JsIdentifierBinding(), $name }), ...])),
+      JsFunctionDeclaration(id=$name),
+      JsClassDeclaration(id=$name)
+    })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Small structural helpers
+// ---------------------------------------------------------------------------
+
+// $inner, possibly wrapped in up to two pairs of parentheses (unrolled: see
+// the note on recursion at the top).
+pattern tanstack_query_prefer_query_options_unwrap_parens($inner) {
+  or {
+    $inner,
+    JsParenthesizedExpression(expression=$inner),
+    JsParenthesizedExpression(expression=JsParenthesizedExpression(expression=$inner))
+  }
+}
+
+// An array literal, possibly wrapped in parentheses / `as` / `satisfies` /
+// `<T>` (upstream isInlineArrayExpression()). No parameters, so it may recurse.
+pattern tanstack_query_prefer_query_options_inline_array() {
+  or {
+    JsArrayExpression(),
+    JsParenthesizedExpression(expression=tanstack_query_prefer_query_options_inline_array()),
+    TsAsExpression(expression=tanstack_query_prefer_query_options_inline_array()),
+    TsSatisfiesExpression(expression=tanstack_query_prefer_query_options_inline_array()),
+    TsTypeAssertionExpression(expression=tanstack_query_prefer_query_options_inline_array())
+  }
+}
+
+// An object member with the identifier key $name: `key: v`, shorthand `key`,
+// or method `key() {}` (all ESTree `Property` nodes). Quoted and computed
+// keys do not match, like upstream isPropertyWithIdentifierKey().
+pattern tanstack_query_prefer_query_options_member_named($name) {
+  or {
+    JsPropertyObjectMember(name=$name),
+    JsShorthandPropertyObjectMember(name=$name),
+    JsMethodObjectMember(name=$name)
+  }
+}
+
+// `queryKey: [...]` with an inline array value (upstream hasInlineFilterQueryKey()).
+pattern tanstack_query_prefer_query_options_inline_key_member() {
+  JsPropertyObjectMember(name="queryKey", value=tanstack_query_prefer_query_options_inline_array())
+}
+
+// Entry point. The node-kind check in front lets Biome reject every other node
+// cheaply (see scripts/build-index.js); it must cover every node the rule reports on.
+and { JsCallExpression(), tanstack_query_prefer_query_options() }

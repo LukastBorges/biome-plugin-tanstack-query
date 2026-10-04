@@ -1,0 +1,89 @@
+{
+  "name": "biome-plugin-tanstack-query",
+  "version": "0.0.0-development",
+  "description": "GritQL port of @tanstack/eslint-plugin-query for the Biome linter.",
+  "keywords": [
+    "biome",
+    "biome-plugin",
+    "gritql",
+    "grit",
+    "lint",
+    "tanstack",
+    "tanstack-query",
+    "react-query"
+  ],
+  "homepage": "https://github.com/LukastBorges/biome-plugin-tanstack-query#readme",
+  "bugs": {
+    "url": "https://github.com/LukastBorges/biome-plugin-tanstack-query/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LukastBorges/biome-plugin-tanstack-query.git"
+  },
+  "license": "MIT",
+  "author": "Lucas Borges (https://github.com/LukastBorges)",
+  "type": "module",
+  "files": [
+    "rules/*.grit"
+  ],
+  "scripts": {
+    "bench": "node scripts/benchmark.js",
+    "build": "node scripts/build-index.js",
+    "check": "npm run lint && npm run typecheck && npm run check:index && npm test && npm run pack:check",
+    "check:index": "node scripts/build-index.js --check",
+    "check:upstream": "node scripts/check-upstream.js",
+    "lint": "biome check .",
+    "lint:commits": "commitlint --from origin/main --to HEAD --verbose",
+    "lint:fix": "biome check --write .",
+    "pack:check": "node scripts/check-pack.js",
+    "release": "semantic-release",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "version:check": "node scripts/sync-version.js --check",
+    "version:sync": "node scripts/sync-version.js"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@commitlint/cli": "^21.2.3",
+    "@commitlint/config-conventional": "^21.2.3",
+    "@semantic-release/changelog": "^7.0.0",
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/exec": "^7.1.0",
+    "@semantic-release/git": "^11.0.1",
+    "@semantic-release/github": "^12.0.10",
+    "@semantic-release/npm": "^13.2.0",
+    "@semantic-release/release-notes-generator": "^14.1.1",
+    "@types/node": "^24.0.0",
+    "conventional-changelog-conventionalcommits": "^10.4.0",
+    "semantic-release": "^25.0.9",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.0"
+  },
+  "peerDependencies": {
+    "@biomejs/biome": ">=2.5.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "^22.12.0 || >=24.0.0",
+      "onFail": "error"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": ">=10.9.0",
+      "onFail": "warn"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "upstream": {
+    "package": "@tanstack/eslint-plugin-query",
+    "version": "5.104.1"
+  }
+}

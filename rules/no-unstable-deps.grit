@@ -1,0 +1,323 @@
+// @tanstack/query/no-unstable-deps
+// Upstream: https://tanstack.com/query/latest/docs/eslint/no-unstable-deps
+// Flags a variable holding the whole result of a TanStack Query hook (useQuery, useMutation, ...)
+// when it is listed directly in the dependency array of useEffect / useMemo / useCallback.
+// Limitations vs ESLint: purely structural. Names are resolved lexically to the nearest enclosing
+// function / block / parameter list that declares them (no real scope analysis), and nothing is
+// followed through re-exports, other files, re-assignments or type information.
+language js
+
+// Entry point. Anchors on the call to the React hook and reports every offending identifier
+// INSIDE its dependency array (the identifier is this rule's span), e.g. `query` in
+//
+//   const query = useQuery(options)
+//   useEffect(() => { query.refetch() }, [query])
+//                                         ^^^^^
+//
+// PERFORMANCE: the GritQL engine in Biome 2.5 records every value a variable is bound to during a
+// SUCCESSFUL match in a history that lives for the rest of the file, and deep-copies that history
+// whenever it clones its state (for every visited node, `some` element, `within` ancestor...).
+// A rule that binds dozens of variables per match therefore makes all later matching slower with
+// every violation found (measured: 25-50 s on a 3,000-line file with 30 violations). `not` runs
+// its pattern on a throw-away copy of the state, so the whole check runs inside `not not { }`:
+// the diagnostics registered inside it are kept (they are a side channel), the bindings are
+// not, and a match leaves a single binding ($hook_call) behind.
+pattern tanstack_query_no_unstable_deps() {
+  // Upstream only looks at a second argument that is an array literal; more arguments are fine.
+  JsCallExpression(arguments = JsCallArguments(args = [$_, JsArrayExpression(), ...])) as $hook_call where {
+    not not and {
+      $hook_call <: JsCallExpression(callee = $callee, arguments = JsCallArguments(args = [$_, $array, ...])),
+      // `useEffect`, `React.useMemo`, `useAlias` (from `import { useCallback as useAlias }`) ...
+      // Binds $react_hook to the name used in the message.
+      $callee <: tanstack_query_no_unstable_deps_react_hook($react_hook),
+      // Check every DIRECT element of the array. Each invocation of a named pattern gets its own
+      // variable scope, so `some` reports every offending element, not just the first one.
+      $array <: JsArrayExpression(elements = some tanstack_query_no_unstable_deps_dependency($react_hook))
+    }
+  }
+}
+
+// One element of a dependency array. Only bare identifiers are considered, like upstream:
+// `[query.data]`, `[query!]`, `[fn(query)]` and `[...queries]` are never reported.
+pattern tanstack_query_no_unstable_deps_dependency($react_hook) {
+  JsIdentifierExpression(name = $name) as $dep where {
+    // 1. Some enclosing function body or block declares `$name` from a TanStack Query hook:
+    //    `const <name> = <hook call>` (or an array pattern element of one). Binds $query_hook to
+    //    the underlying hook (useQuery, useMutation, ...) and $decl_scope to that body/block.
+    $dep <: within or {
+      JsFunctionBody(statements = some tanstack_query_no_unstable_deps_tracked_statement($name, $query_hook)),
+      JsBlockStatement(statements = some tanstack_query_no_unstable_deps_tracked_statement($name, $query_hook))
+    } as $decl_scope,
+    // 2. ... and it is the NEAREST scope declaring `$name`: a parameter or `const` of the same
+    //    name in a nested function or block shadows the query result, as in JavaScript.
+    //    (`within` tries every ancestor, but once $scope is bound to the nearest declaring scope
+    //    the outer ones no longer match it.) Done second because step 1 rules out almost every
+    //    dependency with a cheap name comparison per statement.
+    $dep <: within tanstack_query_no_unstable_deps_local_scope($name, $scope),
+    $scope <: $decl_scope,
+    register_diagnostic(
+      span = $dep,
+      message = `@tanstack/query/no-unstable-deps: The result of $query_hook is not referentially stable, so don't pass it directly into the dependencies array of $react_hook. Instead, destructure the return value of $query_hook and pass the destructured values into the dependency array of $react_hook.`,
+      severity = "error"
+    )
+  }
+}
+
+// The callee of a React hook that takes a dependency array. Mirrors upstream `getReactHook`:
+//   - a bare `useEffect` / `useCallback` / `useMemo` identifier (upstream does not check where it
+//     comes from either),
+//   - `React.useEffect(...)` and friends, on an object literally named `React`,
+//   - a local alias imported from react: `import { useMemo as useStableValue } from 'react'`.
+//     (Upstream only recognises aliases imported from the exact specifier "React"; this port
+//     accepts both "react" and "React".)
+pattern tanstack_query_no_unstable_deps_react_hook($react_hook) {
+  or {
+    JsIdentifierExpression(name = $react_hook) where {
+      // GritQL anchors a regex as ^...$ without grouping: always wrap alternations in (?:...).
+      $react_hook <: r"(?:useEffect|useCallback|useMemo)"
+    },
+    JsStaticMemberExpression(object = JsIdentifierExpression(name = r"React"), member = $react_hook) where {
+      $react_hook <: r"(?:useEffect|useCallback|useMemo)"
+    },
+    JsIdentifierExpression(name = $react_hook) where {
+      // Hook aliases must still start with `use` (rules of hooks); checking the name first keeps
+      // ordinary calls like `fn(a, [b])` from scanning the imports.
+      $react_hook <: r"use[A-Z0-9].*",
+      // Cheap text test before scanning the imports: `import { useMemo as useX }`.
+      $program <: includes `as $react_hook`,
+      $react_hook <: within JsModule(items = some JsImport(import_clause = $clause) where {
+        $clause <: tanstack_query_no_unstable_deps_value_import($module),
+        // The module literal is matched with its quotes: "react" / 'react' (or "React").
+        $module <: r"['\"][Rr]eact['\"]",
+        $clause <: contains JsNamedImportSpecifier(
+          name = r"(?:useEffect|useCallback|useMemo)",
+          local_name = $local
+        ) where { $local <: $react_hook }
+      })
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lexical scopes
+// ---------------------------------------------------------------------------------------------
+
+// A function body, block or function-like node whose own declarations or parameters introduce
+// `$name`, bound to `$scope`. Used with `within`, this finds the scope a reference resolves to.
+// The module is not included: TanStack Query hooks cannot be called at the top level.
+pattern tanstack_query_no_unstable_deps_local_scope($name, $scope) {
+  or {
+    JsFunctionBody(statements = some tanstack_query_no_unstable_deps_declares($name)),
+    JsBlockStatement(statements = some tanstack_query_no_unstable_deps_declares($name)),
+    JsStaticInitializationBlockClassMember(statements = some tanstack_query_no_unstable_deps_declares($name)),
+    // Parameters shadow outer names: `function Inner(query) {}`, `(query) => useMemo(...)`.
+    JsFunctionDeclaration(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsFunctionExportDefaultDeclaration(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsFunctionExpression(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsArrowFunctionExpression(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsMethodClassMember(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsMethodObjectMember(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsConstructorClassMember(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsSetterClassMember(parameter = contains and { JsIdentifierBinding(), $name }),
+    JsSetterObjectMember(parameter = contains and { JsIdentifierBinding(), $name }),
+    JsCatchClause(declaration = contains and { JsIdentifierBinding(), $name }),
+    JsForOfStatement(initializer = contains and { JsIdentifierBinding(), $name }),
+    JsForInStatement(initializer = contains and { JsIdentifierBinding(), $name }),
+    JsForStatement(initializer = contains and { JsIdentifierBinding(), $name })
+  } as $scope
+}
+
+// A statement of a function body or block that declares `$name`: a variable (including any
+// destructured name), a function or a class.
+pattern tanstack_query_no_unstable_deps_declares($name) {
+  or {
+    JsVariableStatement(declaration = JsVariableDeclaration(
+      declarators = some JsVariableDeclarator(id = contains and { JsIdentifierBinding(), $name })
+    )),
+    JsFunctionDeclaration(id = and { JsIdentifierBinding(), $name }),
+    JsClassDeclaration(id = and { JsIdentifierBinding(), $name })
+  }
+}
+
+// The callee `$name` of `$call`, resolved to its declaring scope: the nearest function / block /
+// parameter list declaring it, otherwise the module (imports and top-level declarations).
+pattern tanstack_query_no_unstable_deps_callee_scope($name, $scope) {
+  within or {
+    tanstack_query_no_unstable_deps_local_scope($name, $scope),
+    JsModule() as $scope
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Tracked declarations
+// ---------------------------------------------------------------------------------------------
+
+// `const|let|var` statement declaring `$name` from a TanStack Query hook result.
+// PERFORMANCE: this runs for every statement of every enclosing function body, for every
+// dependency. The substring test is a cheap text filter that skips almost every statement
+// before any structural matching (which copies the engine state at each step).
+pattern tanstack_query_no_unstable_deps_tracked_statement($name, $query_hook) {
+  and {
+    JsVariableStatement(),
+    includes $name,
+    JsVariableStatement(declaration = JsVariableDeclaration(
+      declarators = some tanstack_query_no_unstable_deps_tracked_declarator($name, $query_hook)
+    ))
+  }
+}
+
+// One declarator of `const|let|var` whose binding introduces `$name` and whose initializer is a
+// call whose result is a TanStack Query hook result (any declarator of a multi-declarator
+// statement). Mirrors upstream `collectVariableNames`:
+//   const query = useQuery(...)              -> query
+//   const [first, ...rest] = useQueries(...) -> first, rest
+// Object destructuring (`const { data } = useQuery(...)`) is the CORRECT pattern and never tracked.
+pattern tanstack_query_no_unstable_deps_tracked_declarator($name, $query_hook) {
+  JsVariableDeclarator(id = $binding, initializer = JsInitializerClause(expression = $init)) where {
+    // Cheapest first: the binding must introduce `$name` (a text comparison).
+    $binding <: or {
+      and { JsIdentifierBinding(), $name },
+      // `[a, , b, ...rest]`: an element / rest element that is exactly `$name`. Defaults and
+      // nested patterns (`[a = x]`, `[[a]]`, `[{ a }]`, `[...[a]]`) are not tracked upstream.
+      // (`pattern` is a GritQL keyword, so the elements' `pattern` field cannot be named.)
+      JsArrayBindingPattern(elements = some or {
+        JsArrayBindingPatternElement(),
+        JsArrayBindingPatternRestElement()
+      } as $element where {
+        $element <: contains and { JsIdentifierBinding(), $name },
+        not $element <: contains or { JsInitializerClause(), JsArrayBindingPattern(), JsObjectBindingPattern() }
+      })
+    },
+    $init <: tanstack_query_no_unstable_deps_tracked_call($query_hook)
+  }
+}
+
+// A call whose result is unstable: either a TanStack Query hook directly, or a call to a custom
+// hook (`use[A-Z0-9]...`) declared in this file that simply returns such a call.
+pattern tanstack_query_no_unstable_deps_tracked_call($query_hook) {
+  or {
+    tanstack_query_no_unstable_deps_query_hook_call($query_hook),
+    JsCallExpression(callee = JsIdentifierExpression(name = $custom_hook)) as $call where {
+      $custom_hook <: r"use[A-Z0-9][A-Za-z0-9_]*",
+      // React's built-in hooks are never wrappers around TanStack Query.
+      not $custom_hook <: r"(?:useState|useReducer|useRef|useContext|useMemo|useCallback|useEffect|useLayoutEffect|useInsertionEffect|useImperativeHandle|useId|useTransition|useDeferredValue|useSyncExternalStore|useOptimistic|useActionState|useFormStatus|useEffectEvent|useDebugValue)",
+      // PERFORMANCE: `useSelector()`, `useNavigate()`, ... are almost always imported. A cheap
+      // substring test on the file text rules out files that cannot define the wrapper before
+      // any scope is walked: a wrapper is written `function useX`, `const|let|var useX` or,
+      // as a later declarator of a statement, `useX =`.
+      $program <: or {
+        includes `function $custom_hook`,
+        includes `const $custom_hook`,
+        includes `let $custom_hook`,
+        includes `var $custom_hook`,
+        includes `$custom_hook =`
+      },
+      // Resolve the callee to its nearest declaration and require it to be a wrapper. A
+      // same-named local function or parameter therefore shadows a top-level wrapper, and
+      // wrappers declared inside other functions are found too (like upstream).
+      $call <: tanstack_query_no_unstable_deps_callee_scope($custom_hook, $hook_scope),
+      $hook_scope <: or {
+        JsFunctionBody(statements = $hook_scope_items),
+        JsBlockStatement(statements = $hook_scope_items),
+        JsModule(items = $hook_scope_items)
+      },
+      $hook_scope_items <: some tanstack_query_no_unstable_deps_custom_hook_definition($custom_hook, $query_hook)
+    }
+  }
+}
+
+// A (optionally exported) custom hook definition that returns the result of a TanStack Query
+// hook call. Mirrors upstream `getReturnedQueryHook`:
+//   function useTodos() { return useQuery(...) }
+//   export const useTodos = () => useQuery(...)
+//   const useTodos = function () { return useQuery(...) }
+//   export default function useTodos() { return useQuery(...) }
+// (Upstream additionally requires the body to contain exactly one top-level `return`; code after
+// a top-level return is unreachable, so this port only requires one returning the hook call.)
+pattern tanstack_query_no_unstable_deps_custom_hook_definition($custom_hook, $query_hook) {
+  or {
+    JsFunctionDeclaration(id = and { JsIdentifierBinding(), $custom_hook }, body = $body),
+    JsExport(export_clause = JsFunctionDeclaration(id = and { JsIdentifierBinding(), $custom_hook }, body = $body)),
+    JsExport(export_clause = JsExportDefaultDeclarationClause(declaration = JsFunctionExportDefaultDeclaration(
+      id = and { JsIdentifierBinding(), $custom_hook },
+      body = $body
+    ))),
+    JsVariableStatement(declaration = JsVariableDeclaration(
+      declarators = some tanstack_query_no_unstable_deps_wrapper_declarator($custom_hook, $body)
+    )),
+    JsExport(export_clause = JsVariableDeclarationClause(declaration = JsVariableDeclaration(
+      declarators = some tanstack_query_no_unstable_deps_wrapper_declarator($custom_hook, $body)
+    )))
+  } where {
+    // The body is (arrow shorthand) or returns at its top level a direct TanStack Query hook call.
+    $body <: or {
+      tanstack_query_no_unstable_deps_query_hook_call($query_hook),
+      JsFunctionBody(statements = some JsReturnStatement(
+        argument = tanstack_query_no_unstable_deps_query_hook_call($query_hook)
+      ))
+    }
+  }
+}
+
+// `useTodos = () => ...` / `useTodos = function () {...}` (any declarator of the statement);
+// binds `$body` to the function body.
+pattern tanstack_query_no_unstable_deps_wrapper_declarator($custom_hook, $body) {
+  JsVariableDeclarator(
+    id = and { JsIdentifierBinding(), $custom_hook },
+    initializer = JsInitializerClause(expression = or {
+      JsArrowFunctionExpression(body = $body),
+      JsFunctionExpression(body = $body)
+    })
+  )
+}
+
+// A direct call to a TanStack Query hook whose result object is not referentially stable,
+// imported from a `@tanstack/*-query` package (upstream `getDirectQueryHook`). The result of
+// useQueries / useSuspenseQueries with an inline `combine` option is user-controlled, so those
+// calls are excluded.
+pattern tanstack_query_no_unstable_deps_query_hook_call($query_hook) {
+  JsCallExpression(callee = JsIdentifierExpression(name = $query_hook)) as $call where {
+    $query_hook <: r"(?:useQuery|useSuspenseQuery|useQueries|useSuspenseQueries|useInfiniteQuery|useSuspenseInfiniteQuery|useMutation)",
+    // `useQueries({ ..., combine })`: an object literal first argument with a `combine` member.
+    not and {
+      $query_hook <: r"(?:useQueries|useSuspenseQueries)",
+      $call <: JsCallExpression(arguments = JsCallArguments(args = [
+        JsObjectExpression(members = some or {
+          JsPropertyObjectMember(name = r"combine"),
+          JsShorthandPropertyObjectMember(name = r"combine"),
+          JsMethodObjectMember(name = r"combine")
+        }),
+        ...
+      ]))
+    },
+    // The callee must resolve to the module scope (a same-named local function or parameter
+    // shadows the import) and be imported by name from any `@tanstack/<framework>-query`
+    // package, like upstream's `isTanstackQueryImport` (aliases match by their local name).
+    $call <: tanstack_query_no_unstable_deps_callee_scope($query_hook, $hook_scope),
+    $hook_scope <: JsModule(items = some JsImport(import_clause = $clause) where {
+      $clause <: tanstack_query_no_unstable_deps_value_import($module),
+      // Quotes are part of the module literal.
+      $module <: r"['\"]@tanstack/[^'\"]*-query['\"]",
+      $clause <: contains or {
+        JsShorthandNamedImportSpecifier(local_name = $local),
+        JsNamedImportSpecifier(local_name = $local)
+      } where { $local <: $query_hook }
+    })
+  }
+}
+
+// A named-import clause (`import { a } from "x"` or `import d, { a } from "x"`) that is not
+// `import type { ... }`; binds `$module` to its module specifier literal (quotes included).
+// (GritQL cannot pass a regex as a pattern argument, so callers match `$module` themselves.)
+pattern tanstack_query_no_unstable_deps_value_import($module) {
+  or {
+    JsImportNamedClause(source = $module) as $clause where {
+      not $clause <: r"type\s[\s\S]*"
+    },
+    JsImportCombinedClause(source = $module)
+  }
+}
+
+// Entry point. The node-kind check in front lets Biome reject every other node
+// cheaply (see scripts/build-index.js); it must cover every node the rule reports on.
+and { JsCallExpression(), tanstack_query_no_unstable_deps() }

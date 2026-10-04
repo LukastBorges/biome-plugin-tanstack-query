@@ -1,0 +1,57 @@
+# Every npm dependency of this repository is dev-only tooling (the published
+# tarball contains .grit files only), so updates use `chore(deps-dev)` /
+# `ci(deps)` commit messages, which never trigger a release (.releaserc.json).
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:00'
+      timezone: Etc/UTC
+    # Give the registry a few days to catch compromised or broken releases.
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
+    open-pull-requests-limit: 10
+    versioning-strategy: increase
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+      include: scope
+    groups:
+      # Biome gets its own PR: a new version can change GritQL matching, and
+      # biome-compat (ci.yml) tests the plugins against it.
+      biome:
+        patterns: ['@biomejs/*']
+      release-tooling:
+        patterns: ['semantic-release', '@semantic-release/*', 'conventional-changelog-*', '@commitlint/*']
+        update-types: [minor, patch]
+      dev-dependencies:
+        patterns: ['*']
+        exclude-patterns: ['@biomejs/*']
+        update-types: [minor, patch]
+    ignore:
+      # v10 requires conventional-changelog-writer >= 9, but
+      # @semantic-release/release-notes-generator 14 bundles writer 8 and fails
+      # with "Missing helper". Revisit with release-notes-generator 15.
+      - dependency-name: conventional-changelog-conventionalcommits
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:00'
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      github-actions:
+        patterns: ['*']

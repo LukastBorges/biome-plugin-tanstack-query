@@ -1,0 +1,87 @@
+name: False positive
+description: A rule reports code that @tanstack/eslint-plugin-query accepts (or that is simply correct).
+title: 'False positive in <rule-name>: '
+labels: [bug, false-positive]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! GritQL has no type information and only limited scope analysis, so some
+        divergence from the ESLint rule is expected and documented in `docs/rules/<rule>.md`.
+        Please check the rule's **Limitations** section first.
+
+        In the meantime you can silence a single occurrence with
+        `// biome-ignore lint/plugin/<rule-name>: <reason>` (standalone rule file) or
+        `// biome-ignore lint/plugin: <reason>` (preset).
+  - type: dropdown
+    id: rule
+    attributes:
+      label: Rule
+      options:
+        - exhaustive-deps
+        - infinite-query-property-order
+        - mutation-property-order
+        - no-rest-destructuring
+        - no-unstable-deps
+        - no-void-query-fn
+        - prefer-query-options
+        - stable-query-client
+    validations:
+      required: true
+  - type: textarea
+    id: code
+    attributes:
+      label: Minimal code that is reported
+      description: The smallest snippet that triggers the diagnostic. It will be added to `valid.tsx` as a regression test.
+      render: tsx
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: Diagnostic
+      description: Output of `npx biome lint <file>` (or `--reporter=json`).
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: eslint
+    attributes:
+      label: Does @tanstack/eslint-plugin-query report this code?
+      options:
+        - No, ESLint accepts it
+        - Yes, ESLint reports it too (then it is not a porting bug, please report upstream)
+        - I did not check
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is this code correct?
+    validations:
+      required: false
+  - type: input
+    id: plugin-version
+    attributes:
+      label: biome-plugin-tanstack-query version
+      placeholder: 1.2.3
+    validations:
+      required: true
+  - type: input
+    id: biome-version
+    attributes:
+      label: Biome version
+      description: Output of `npx biome --version`.
+      placeholder: 2.5.15
+    validations:
+      required: true
+  - type: dropdown
+    id: plugin-file
+    attributes:
+      label: Which plugin file do you load?
+      options:
+        - rules/index.grit (recommended)
+        - rules/recommended-strict.grit
+        - a standalone rules/<rule>.grit
+    validations:
+      required: true

@@ -1,0 +1,197 @@
+// @tanstack/query/mutation-property-order
+// Upstream: https://tanstack.com/query/latest/docs/eslint/mutation-property-order
+// Flags `useMutation({ ... })` options listing `onError`/`onSettled` before
+// `onMutate` (TypeScript infers the context type from `onMutate`). Like upstream:
+// any identifier callee named `useMutation` (no import tracking), first argument
+// only, spreads/quoted keys ignored; unlike upstream, computed keys are ignored.
+// Safe fix = one bubble-sort swap per pass; withheld (report only) when a spread/
+// computed key sits between the pair or a moved value may have side effects.
+language js
+
+// PERFORMANCE NOTE: in Biome 2.5.15, every successful match of a plugin whose
+// top-level pattern is a named-pattern call costs time proportional to the file
+// size for EACH variable bound during the match. This rule therefore binds only
+// four variables ($members, $first, $late, $next) and spells everything else
+// inline or in variable-free helper patterns. (Variables declared anywhere in a
+// plugin file also slow down every node visit, which adds up in the presets.)
+pattern tanstack_query_mutation_property_order() {
+  JsCallExpression(
+    // A bare identifier callee only: `useMutation(...)` and
+    // `useMutation<TData, TError>(...)` match; `trpc.post.create.useMutation(...)`
+    // and `Query.useMutation(...)` do not (upstream requires an Identifier too).
+    // `and { ... }` checks two things about the same node without binding it.
+    callee=and { JsIdentifierExpression(), r"useMutation" },
+    // `args=[<first>, ...]` inspects the FIRST argument and ignores any others,
+    // exactly like upstream's `node.arguments[0]`. Only inline object literals
+    // are inspected (`useMutation(options)`, `useMutation(mutationOptions(...))`
+    // and Solid's `useMutation(() => ({ ... }))` are out of scope, as upstream).
+    // ESTree drops parentheses, so upstream also sees `useMutation(({ ... }))`;
+    // one level of parentheses is unwrapped here to match.
+    arguments=JsCallArguments(args=[or {
+      JsObjectExpression(members=$members),
+      JsParenthesizedExpression(expression=JsObjectExpression(members=$members))
+    }, ...])
+  ) where {
+    // 1. Detection. `$first` is the first `onError` / `onSettled` that has an
+    //    `onMutate` somewhere after it. This is the first property that the
+    //    upstream stable sort would move, so it is where we report.
+    $members <: [..., $first where { $first <: tanstack_query_mutation_property_order_late_callback() }, ..., tanstack_query_mutation_property_order_on_mutate(), ...],
+
+    // 2. Report, with a fix when one can be computed and is provably safe.
+    //    The first branch of the `or` that succeeds wins, so the fix-less
+    //    report in the second branch is only used when the first one fails:
+    //    whether we report never depends on whether we can fix.
+    or {
+      and {
+        // 2a. Which swap? Upstream sorts the three callbacks in one go, keeping
+        //     every other property (and all comments / separators) in its slot
+        //     and keeping the relative order of `onError` and `onSettled`. A
+        //     GritQL rewrite cannot sort a list, so we perform ONE step of a
+        //     bubble sort instead: swap a late callback `$late` with the
+        //     checked property `$next` that immediately follows it (skipping
+        //     unrelated properties) when that one is `onMutate`.
+        //     `biome lint --write` re-lints after every applied fix until
+        //     nothing changes, so the steps converge to exactly the upstream
+        //     output.
+        //
+        // 2b. Is the swap semantics-preserving? Both moved values must be free
+        //     of side effects (their evaluation order changes), and nothing
+        //     between them may define the same key: moving a callback across a
+        //     spread, a computed key or a quoted "onError" key could change
+        //     which definition wins. Upstream fixes these too; we only report.
+        //
+        //     Both questions are answered by one list pattern. The inner list
+        //     pattern binds `$next` to the FIRST member after `$late` that is
+        //     either a checked callback or a hazard (list patterns match
+        //     leftmost-first), and only then do we require it to be a
+        //     side-effect-free `onMutate`: a hazard in between makes `$next`
+        //     the hazard, so the swap is refused. All conditions sit inside the
+        //     `where` of `$late`, so the outer list pattern moves on to the
+        //     next late callback when one fails; any such swap is a valid step
+        //     towards the upstream order.
+        //     (A bound variable inside a list pattern is compared by TEXT, so
+        //     with two textually identical late callbacks the inner pattern
+        //     finds the first copy and the swap is refused: the property is
+        //     then reported without a fix, never fixed wrongly.)
+        $members <: [..., $late where {
+          $late <: tanstack_query_mutation_property_order_late_callback(),
+          $late <: tanstack_query_mutation_property_order_side_effect_free(),
+          $members <: [..., $late, ..., $next where { $next <: or {
+            tanstack_query_mutation_property_order_checked(),
+            tanstack_query_mutation_property_order_reorder_hazard()
+          } }, ...],
+          $next <: tanstack_query_mutation_property_order_on_mutate(),
+          $next <: tanstack_query_mutation_property_order_side_effect_free()
+        }, ...],
+
+        // 2c. Swap the two properties' text. This MUST come after every check
+        //     on `$late` / `$next`: once `$late => $next` has run, `$late <: ...`
+        //     sees the new text. Only the nodes themselves are rewritten, so
+        //     comments and the separators between properties stay where they
+        //     were, exactly like upstream's fixer.
+        $late => $next,
+        $next => $late,
+        register_diagnostic(span=$first, message="@tanstack/query/mutation-property-order: Invalid order of properties for `useMutation`.", severity="error", fix_kind="safe")
+      },
+      // 2d. No safe fix: report only. (Deliberately no "unsafe" fix: Biome
+      //     2.5.15 bundles every rewrite of a plugin file into the action of the
+      //     file's first diagnostic, so an unsafe rewrite here would leak into
+      //     `--write` whenever a safe diagnostic comes first.)
+      register_diagnostic(span=$first, message="@tanstack/query/mutation-property-order: Invalid order of properties for `useMutation`.", severity="error")
+    }
+  }
+}
+
+// A member named `onMutate` with a plain identifier key. Upstream only looks at
+// properties whose key is an Identifier, which in ESTree covers `key: value`,
+// shorthand `key`, methods `key() {}` and accessors `get key() {}`. Regex
+// patterns must match the whole node text, so `"onMutate"` (quoted) and
+// `[onMutate]` (computed) do not match, and neither does `onMutateX`.
+// Biome anchors a regex like `^...$` WITHOUT grouping it first, so an
+// alternation must be wrapped in `(?:...)`: plain r"onError|onSettled" would
+// also match `onErrorRetry`. (A capturing group `(...)` would instead be
+// treated as a GritQL variable binding and fail at runtime.)
+pattern tanstack_query_mutation_property_order_on_mutate() {
+  or {
+    JsPropertyObjectMember(name=r"onMutate"),
+    JsShorthandPropertyObjectMember(name=r"onMutate"),
+    JsMethodObjectMember(name=r"onMutate"),
+    JsGetterObjectMember(name=r"onMutate"),
+    JsSetterObjectMember(name=r"onMutate")
+  }
+}
+
+// `onError` and `onSettled` form one group: upstream does not care about their
+// relative order, only that both come after `onMutate`.
+pattern tanstack_query_mutation_property_order_late_callback() {
+  or {
+    JsPropertyObjectMember(name=r"(?:onError|onSettled)"),
+    JsShorthandPropertyObjectMember(name=r"(?:onError|onSettled)"),
+    JsMethodObjectMember(name=r"(?:onError|onSettled)"),
+    JsGetterObjectMember(name=r"(?:onError|onSettled)"),
+    JsSetterObjectMember(name=r"(?:onError|onSettled)")
+  }
+}
+
+// Any of the three order-sensitive callbacks.
+pattern tanstack_query_mutation_property_order_checked() {
+  or {
+    tanstack_query_mutation_property_order_on_mutate(),
+    tanstack_query_mutation_property_order_late_callback()
+  }
+}
+
+// A member whose position can be swapped without reordering side effects:
+// methods, accessors and shorthands run no code when the object is created, and
+// neither do function / arrow expressions, literals or plain references.
+pattern tanstack_query_mutation_property_order_side_effect_free() {
+  or {
+    JsShorthandPropertyObjectMember(),
+    JsMethodObjectMember(),
+    JsGetterObjectMember(),
+    JsSetterObjectMember(),
+    JsPropertyObjectMember(value=or {
+      JsArrowFunctionExpression(),
+      JsFunctionExpression(),
+      tanstack_query_mutation_property_order_reference(),
+      JsNullLiteralExpression(),
+      JsBooleanLiteralExpression(),
+      JsNumberLiteralExpression(),
+      JsStringLiteralExpression()
+    })
+  }
+}
+
+// `handler`, `this.handleError`, `handlers.onError`, `a?.b.c`: a chain of static
+// property reads rooted at an identifier or `this`. Patterns can be recursive.
+// Calls anywhere in the chain (`makeHandlers().onError`) are excluded: moving
+// them would reorder their side effects relative to the other properties. A
+// property read only runs code through a getter, which is not a realistic way
+// to supply mutation callbacks.
+pattern tanstack_query_mutation_property_order_reference() {
+  or {
+    JsIdentifierExpression(),
+    JsThisExpression(),
+    JsStaticMemberExpression(object=tanstack_query_mutation_property_order_reference())
+  }
+}
+
+// A member that, when one of the swapped callbacks moves across it, could
+// change which definition of a key wins at runtime.
+pattern tanstack_query_mutation_property_order_reorder_hazard() {
+  or {
+    JsSpread(),
+    JsPropertyObjectMember(name=JsComputedMemberName()),
+    JsMethodObjectMember(name=JsComputedMemberName()),
+    JsGetterObjectMember(name=JsComputedMemberName()),
+    JsSetterObjectMember(name=JsComputedMemberName()),
+    JsPropertyObjectMember(name=r"[\"'](?:onMutate|onError|onSettled)[\"']"),
+    JsMethodObjectMember(name=r"[\"'](?:onMutate|onError|onSettled)[\"']"),
+    JsGetterObjectMember(name=r"[\"'](?:onMutate|onError|onSettled)[\"']"),
+    JsSetterObjectMember(name=r"[\"'](?:onMutate|onError|onSettled)[\"']")
+  }
+}
+
+// Entry point. The node-kind check in front lets Biome reject every other node
+// cheaply (see scripts/build-index.js); it must cover every node the rule reports on.
+and { JsCallExpression(), tanstack_query_mutation_property_order() }

@@ -1,0 +1,319 @@
+// @tanstack/query/exhaustive-deps
+// Upstream: https://tanstack.com/query/latest/docs/eslint/exhaustive-deps
+// Flags a `queryKey` that does not mention a variable its sibling inline `queryFn` reads, when that
+// variable is declared directly in the outermost enclosing function (its parameters or top-level
+// declarations). Structural approximation of ESLint's scope analysis: dependencies are compared by
+// root identifier (`state.bar` is covered by `state.foo`), any same-named binding inside the queryFn
+// disables the check for that name, keys that cannot be resolved structurally are skipped, and
+// there is no `allowlist` option. Report-only (no fix).
+language js
+
+// Notes for readers learning GritQL from this file (Biome 2.5 engine specifics):
+// - Every GritQL variable in the plugin file (pattern parameters included) adds a fixed cost to
+//   EVERY syntax node Biome visits, so this file keeps them few (14). "Is a binding named $x" is
+//   written `and { JsIdentifierBinding(), $x }`: matching a node against a bound variable
+//   compares source text, so no extra variable is needed.
+// - A variable bound by an inline `contains` keeps its first value for the following matches;
+//   locals of a named pattern are fresh on every call. That is why the per-read check below is a
+//   named pattern (`tanstack_query_exhaustive_deps_read`).
+// - `or` rolls back the bindings of a failed branch, so two branches can bind the same variable;
+//   bindings made inside a `not` that succeeds are discarded too.
+// - When a bound variable successfully matches ANOTHER node (same text), it is re-bound to that
+//   node: later `within` checks on it then start from the wrong place. Order checks accordingly.
+// - `within` / `contains` are inclusive (a node is within / contains itself).
+// - Patterns cannot be recursive (stack overflow): chains are unrolled to a fixed depth.
+// - Every parameter name is unique in the file: calling a pattern with an argument variable whose
+//   name equals one of the callee's parameters silently fails to match.
+
+pattern tanstack_query_exhaustive_deps() {
+  // Any object literal with a `queryKey` and a `queryFn` as DIRECT members: useQuery,
+  // queryOptions, useSuspenseQuery, createQuery, query factories... Like upstream, the callee and
+  // the imports are not checked.
+  JsObjectExpression(members=and {
+    // `queryKey: <expr>` or shorthand `queryKey`. $key is the reported span (span ownership: the
+    // queryKey VALUE, never the call or the options object). Quoted / computed names never match.
+    some or {
+      JsPropertyObjectMember(name="queryKey", value=$key),
+      JsShorthandPropertyObjectMember(name="queryKey") as $key
+    },
+    some or {
+      JsPropertyObjectMember(name="queryFn", value=$query_fn),
+      JsMethodObjectMember(name="queryFn") as $query_fn
+    }
+  }) where {
+    // Only inline query functions have visible dependencies: `() => ...`, `function () {}`, the
+    // method `queryFn() {}`, `(async () => ...)`, or a ternary such as `c ? () => ... : skipToken`.
+    // `queryFn: fetchTodos` / `queryFn: makeFetcher(id)` are skipped, as upstream does.
+    $query_fn <: or {
+      tanstack_query_exhaustive_deps_inline_function(),
+      JsParenthesizedExpression(expression=tanstack_query_exhaustive_deps_inline_function()),
+      JsConditionalExpression()
+    },
+    // Upstream only inspects queries that live inside a function, and only treats as dependencies
+    // the names declared directly in the OUTERMOST enclosing function. Module-level queries are
+    // never reported (upstream makes an exception for .vue files only).
+    $key <: within tanstack_query_exhaustive_deps_function() as $outer where {
+      $outer <: not within and { tanstack_query_exhaustive_deps_function(), not $outer }
+    },
+    // Bind $source to the expression the key is built from. Upstream's
+    // `dereferenceVariablesAndTypeAssertions` follows `queryKey: key` to `const key = [...]`.
+    or {
+      and {
+        // `key`, shorthand `queryKey`, `key as const`, `(key)!`, ...: resolve the declaration.
+        $key <: or {
+          JsShorthandPropertyObjectMember(name=$key_name),
+          JsIdentifierExpression(name=$key_name),
+          tanstack_query_exhaustive_deps_wrapped(JsIdentifierExpression(name=$key_name)),
+          tanstack_query_exhaustive_deps_wrapped(tanstack_query_exhaustive_deps_wrapped(JsIdentifierExpression(name=$key_name))),
+          tanstack_query_exhaustive_deps_wrapped(tanstack_query_exhaustive_deps_wrapped(tanstack_query_exhaustive_deps_wrapped(JsIdentifierExpression(name=$key_name))))
+        },
+        or {
+          // The only binding of that name in the outermost function is `name = <init>`. (Other
+          // declarators of the same name with the very same initializer text are harmless.)
+          $outer <: and {
+            contains JsVariableDeclarator(
+              id=and { JsIdentifierBinding(), $key_name },
+              initializer=JsInitializerClause(expression=$source)
+            ),
+            not contains and {
+              JsIdentifierBinding(),
+              $key_name,
+              not within JsVariableDeclarator(initializer=JsInitializerClause(expression=$source))
+            }
+          },
+          // ...or a top-level (optionally exported) module `const` / `let` that the function does
+          // not shadow. Only the file's top-level statements are inspected (`JsScript` is the
+          // root of CommonJS `.cjs` files).
+          and {
+            $outer <: not contains and { JsIdentifierBinding(), $key_name },
+            $outer <: within or {
+              JsModule(items=some or {
+                JsVariableStatement(declaration=JsVariableDeclaration(declarators=some JsVariableDeclarator(
+                  id=and { JsIdentifierBinding(), $key_name },
+                  initializer=JsInitializerClause(expression=$source)
+                ))),
+                JsExport(export_clause=JsVariableDeclarationClause(declaration=JsVariableDeclaration(declarators=some JsVariableDeclarator(
+                  id=and { JsIdentifierBinding(), $key_name },
+                  initializer=JsInitializerClause(expression=$source)
+                ))))
+              }),
+              JsScript(statements=some JsVariableStatement(declaration=JsVariableDeclaration(declarators=some JsVariableDeclarator(
+                id=and { JsIdentifierBinding(), $key_name },
+                initializer=JsInitializerClause(expression=$source)
+              ))))
+            }
+          }
+        },
+        // An alias of an alias (`const key = otherKey`): give up rather than guess.
+        $source <: not tanstack_query_exhaustive_deps_key_reference()
+      },
+      // Any other key (`['todo', id]`, `todoKeys.detail(id)`, `[...] as const`) is used as is.
+      and {
+        $key <: not tanstack_query_exhaustive_deps_key_reference(),
+        $source = $key
+      }
+    },
+    // Collect every missing dependency name, in source order, then report them all at once.
+    $missing = [],
+    $query_fn <: contains tanstack_query_exhaustive_deps_read($missing, $source, $outer, $query_fn),
+    // Upstream message, with its {{deps}} placeholder filled in (root names, de-duplicated).
+    register_diagnostic(
+      span=$key,
+      message=join(list=["@tanstack/query/exhaustive-deps: The following dependencies are missing in your queryKey", join(list=distinct(list=$missing), separator=", ")], separator=": "),
+      severity="error"
+    )
+  }
+}
+
+// Every node that opens a function scope (upstream: FunctionDeclaration / FunctionExpression /
+// ArrowFunctionExpression, which in ESTree also covers class and object methods and accessors).
+pattern tanstack_query_exhaustive_deps_function() {
+  or {
+    JsArrowFunctionExpression(),
+    JsFunctionExpression(),
+    JsFunctionDeclaration(),
+    JsFunctionExportDefaultDeclaration(),
+    JsMethodObjectMember(),
+    JsMethodClassMember(),
+    JsGetterObjectMember(),
+    JsGetterClassMember(),
+    JsSetterObjectMember(),
+    JsSetterClassMember(),
+    JsConstructorClassMember()
+  }
+}
+
+// The function shapes upstream scans as a queryFn.
+pattern tanstack_query_exhaustive_deps_inline_function() {
+  or { JsArrowFunctionExpression(), JsFunctionExpression(), JsMethodObjectMember() }
+}
+
+// One value read inside the queryFn that is a dependency and is absent from the key: appends its
+// name to $read_missing. `contains` evaluates it on every node of the queryFn. GritQL stops at the
+// first failing condition, so the cheap and selective ones come first (check 5 must come last).
+pattern tanstack_query_exhaustive_deps_read($read_missing, $read_source, $read_outer, $read_fn) {
+  or {
+    // `id`, `props.id`, `map[key]`, `${id}`, `!!id`, `{ x: id }`, `<C id={id} />`, ...
+    JsIdentifierExpression(name=$dep_name),
+    // `{ id }` object shorthand reads `id` too.
+    JsShorthandPropertyObjectMember(name=$dep_name)
+  } where {
+    // 1. Not read anywhere in the key. Any read of the same root name counts, so
+    //    `queryKey: [state.foo]` covers `state.bar` (upstream would still require `state.bar`).
+    //    Reads inside a callback of the key that re-binds the name (`ids.map((id) => id)`) are
+    //    not the outer variable and do not count.
+    $read_source <: not contains and {
+      JsReferenceIdentifier(),
+      $dep_name,
+      not within and {
+        tanstack_query_exhaustive_deps_function(),
+        within $read_source,
+        contains and { JsIdentifierBinding(), $dep_name }
+      }
+    },
+    $dep_name <: not "undefined",
+    // 2. Not declared inside the queryFn (its parameters, locals, nested callbacks' parameters).
+    //    Name-based, so a same-named binding ANYWHERE in the queryFn hides the outer variable
+    //    (false negative rather than false positive).
+    $read_fn <: not contains and { JsIdentifierBinding(), $dep_name },
+    // 3. Read inside an inline function of the queryFn: for `c ? () => a : skipToken` this skips
+    //    the condition `c` and any branch that is not a function.
+    $dep_name <: within and {
+      tanstack_query_exhaustive_deps_inline_function(),
+      within $read_fn
+    },
+    // 4. Not exempted by its syntactic position (one walk up the ancestors):
+    $dep_name <: not within or {
+      // `fetchTodo(id)`, `api.todos.get(id)`, `a?.b!.c()`, `onDone?.()`: the root of a call
+      // target is not a dependency (upstream `isFunctionCallTarget`). Matching the callee head
+      // against $dep_name compares TEXT, so the read must also lie outside the call's arguments:
+      // in `date.format(date)` the argument `date` is still a dependency.
+      //   The arguments are checked FIRST (fields are matched in the order written): matching the
+      //   callee head re-binds $dep_name to it. $dep_scope is only a scratch variable here (it
+      //   saves a variable): bindings made inside a `not` that succeeds are discarded, so check 5
+      //   below still finds it unbound.
+      //   The callee is `head`, `head.a`, `head?.a[b]`, `head!.a.b.c`, ... Patterns cannot recurse,
+      //   so the member / non-null / parentheses chain is unrolled to 8 links; a callee chain
+      //   deeper than that is accepted whatever its head (a false negative for the computed
+      //   properties of such a chain, never a false positive).
+      JsCallExpression(
+        arguments=$dep_scope where { $dep_name <: not within $dep_scope },
+        callee=or {
+          $dep_name,
+          tanstack_query_exhaustive_deps_chain_link($dep_name),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name)),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name))),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name)))),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name))))),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name)))))),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name))))))),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name)))))))),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($_)))))))))
+        }
+      ),
+      // `new Foo()` / `new Foo(id)`: upstream skips identifiers whose PARENT is a NewExpression
+      // (so `new api.Client()` still needs `api`, as upstream).
+      JsNewExpression(callee=$dep_name),
+      JsNewExpression(arguments=JsCallArguments(args=some $dep_name)),
+      // `value instanceof Foo`: neither operand is a dependency.
+      JsInstanceofExpression(left=$dep_name),
+      JsInstanceofExpression(right=$dep_name)
+    },
+    // 5. Declared directly in the outermost function (upstream: `scope.set.has(name)` on that
+    //    function). Module-level variables, imports and globals never are. $dep_scope is bound to
+    //    the parameter list in the first branch and to the body in the second (`or` rolls back).
+    //    This check comes LAST: when `$dep_name` successfully matches the declaration, GritQL
+    //    re-binds `$dep_name` to that declaration node, and the positional checks 3 and 4 would
+    //    then look at the wrong node.
+    $read_outer <: or {
+      or {
+        JsArrowFunctionExpression(parameters=$dep_scope),
+        JsFunctionExpression(parameters=$dep_scope),
+        JsFunctionDeclaration(parameters=$dep_scope),
+        JsFunctionExportDefaultDeclaration(parameters=$dep_scope),
+        JsMethodObjectMember(parameters=$dep_scope),
+        JsMethodClassMember(parameters=$dep_scope),
+        JsConstructorClassMember(parameters=$dep_scope),
+        JsSetterObjectMember(parameter=$dep_scope),
+        JsSetterClassMember(parameter=$dep_scope)
+      } where {
+        // A parameter, destructured or not. Names bound inside a type annotation
+        // (`onChange: (url: string) => void`), a default value (`render = (id) => id`) or a
+        // decorator are not parameters of this function.
+        $dep_scope <: contains and {
+          JsIdentifierBinding(),
+          $dep_name,
+          not within and {
+            or { TsTypeAnnotation(), JsInitializerClause(), JsDecorator() },
+            within $read_outer
+          }
+        }
+      },
+      or {
+        JsArrowFunctionExpression(body=$dep_scope),
+        JsFunctionExpression(body=$dep_scope),
+        JsFunctionDeclaration(body=$dep_scope),
+        JsFunctionExportDefaultDeclaration(body=$dep_scope),
+        JsMethodObjectMember(body=$dep_scope),
+        JsMethodClassMember(body=$dep_scope),
+        JsConstructorClassMember(body=$dep_scope),
+        JsGetterObjectMember(body=$dep_scope),
+        JsGetterClassMember(body=$dep_scope),
+        JsSetterObjectMember(body=$dep_scope),
+        JsSetterClassMember(body=$dep_scope)
+      } where {
+        // A top-level `const` / `let` / `var` (destructured or not, but not a name bound inside
+        // a default value), function or class declaration of the body.
+        $dep_scope <: JsFunctionBody(statements=some or {
+          JsVariableStatement(declaration=JsVariableDeclaration(declarators=some JsVariableDeclarator(
+            id=contains and {
+              JsIdentifierBinding(),
+              $dep_name,
+              not within and { JsInitializerClause(), within $read_outer }
+            }
+          ))),
+          JsFunctionDeclaration(id=$dep_name),
+          JsClassDeclaration(id=$dep_name)
+        })
+      }
+    },
+    $read_missing += text($dep_name)
+  }
+}
+
+pattern tanstack_query_exhaustive_deps_chain_link($link_object) {
+  or {
+    JsStaticMemberExpression(object=$link_object),
+    JsComputedMemberExpression(object=$link_object),
+    TsNonNullAssertionExpression(expression=$link_object),
+    JsParenthesizedExpression(expression=$link_object)
+  }
+}
+
+// `key`, shorthand `queryKey`, and up to three `as` / `satisfies` / `!` / `<T>` / parentheses
+// around an identifier (`key as const`, `(key as unknown) as K`): a key whose content we cannot
+// see without resolving the identifier. (The main pattern spells the same shapes out once more to
+// bind the identifier's name: a pattern parameter would cost one more variable.)
+pattern tanstack_query_exhaustive_deps_key_reference() {
+  or {
+    JsShorthandPropertyObjectMember(),
+    JsIdentifierExpression(),
+    tanstack_query_exhaustive_deps_wrapped(JsIdentifierExpression()),
+    tanstack_query_exhaustive_deps_wrapped(tanstack_query_exhaustive_deps_wrapped(JsIdentifierExpression())),
+    tanstack_query_exhaustive_deps_wrapped(tanstack_query_exhaustive_deps_wrapped(tanstack_query_exhaustive_deps_wrapped(JsIdentifierExpression())))
+  }
+}
+
+pattern tanstack_query_exhaustive_deps_wrapped($wrapped) {
+  or {
+    TsAsExpression(expression=$wrapped),
+    TsSatisfiesExpression(expression=$wrapped),
+    TsNonNullAssertionExpression(expression=$wrapped),
+    TsTypeAssertionExpression(expression=$wrapped),
+    JsParenthesizedExpression(expression=$wrapped)
+  }
+}
+
+// Entry point. The node-kind check in front lets Biome reject every other node
+// cheaply (see scripts/build-index.js); it must cover every node the rule reports on.
+and { JsObjectExpression(), tanstack_query_exhaustive_deps() }

@@ -1,0 +1,83 @@
+name: Bug report
+description: A missed violation (false negative), a wrong or unsafe fix, a crash, or a packaging/installation problem.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reporting code that is flagged although it is correct? Use the **False positive** template instead.
+        Security issue? Use [private vulnerability reporting](https://github.com/LukastBorges/biome-plugin-tanstack-query/security/advisories/new).
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem?
+      options:
+        - False negative (a violation is not reported)
+        - Wrong or unsafe automatic fix
+        - Biome crashes, hangs or fails to load the plugin
+        - Installation / biome.json configuration
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: rule
+    attributes:
+      label: Rule
+      options:
+        - exhaustive-deps
+        - infinite-query-property-order
+        - mutation-property-order
+        - no-rest-destructuring
+        - no-unstable-deps
+        - no-void-query-fn
+        - prefer-query-options
+        - stable-query-client
+        - Not rule specific
+    validations:
+      required: true
+  - type: textarea
+    id: code
+    attributes:
+      label: Minimal reproduction
+      description: The smallest code (and `biome.json`) that shows the problem. A link to a repository is fine too.
+      render: tsx
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: For a false negative, what does @tanstack/eslint-plugin-query report on this code?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Output of `npx biome lint <file>` (and the fixed code, for a wrong fix).
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: biome-plugin-tanstack-query version
+      placeholder: 1.2.3
+    validations:
+      required: true
+  - type: input
+    id: biome-version
+    attributes:
+      label: Biome version
+      description: Output of `npx biome --version`.
+      placeholder: 2.5.15
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, package manager, editor integration (if relevant).
+      placeholder: macOS 26, npm 11, VS Code Biome extension 3.x
+    validations:
+      required: false

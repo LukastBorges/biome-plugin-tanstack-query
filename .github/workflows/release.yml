@@ -1,0 +1,101 @@
+# Publishes to npm with semantic-release after the full CI suite passed on the
+# exact commit being released.
+#
+# Authentication (see CONTRIBUTING.md > Releasing):
+#   - npm: Trusted Publishing (OIDC). No long-lived npm token is stored; the
+#     job's `id-token: write` permission lets @semantic-release/npm exchange a
+#     short-lived GitHub OIDC token for a single-use npm publish token, and npm
+#     attaches a signed SLSA provenance attestation automatically. Configure it
+#     once on npmjs.com > package > Settings > Trusted publishing with:
+#       owner/repo  LukastBorges/biome-plugin-tanstack-query
+#       workflow    release.yml
+#       environment npm
+#   - GitHub: the built-in GITHUB_TOKEN (scoped by `permissions` below) pushes
+#     the release commit + tag and creates the GitHub release.
+name: Release
+
+on:
+  push:
+    branches: [main, next]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never run two releases of the same branch at once, and never cancel one
+  # half-way through (it could leave a tag without a published package).
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    # Forks run CI on their own pushes; only the canonical repository releases.
+    if: github.repository == 'LukastBorges/biome-plugin-tanstack-query'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  release:
+    name: semantic-release
+    needs: ci
+    if: github.repository == 'LukastBorges/biome-plugin-tanstack-query'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Optional protection rules (required reviewers, main-only deployment
+    # branches) can be added to this environment in the repository settings.
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/biome-plugin-tanstack-query
+    permissions:
+      contents: write # push the release commit and tag, create the GitHub release
+      issues: write # comment on released issues, open an issue if the release fails
+      pull-requests: write # comment on released pull requests
+      id-token: write # npm Trusted Publishing (OIDC) and provenance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # semantic-release needs every tag and commit since the last release.
+          fetch-depth: 0
+          # Do not leave the token in .git/config: semantic-release authenticates
+          # its own `git push` with GITHUB_TOKEN from the environment, and no
+          # other step needs write access to the repository.
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Node 24 ships npm >= 11.5.1, required for Trusted Publishing.
+          node-version-file: .nvmrc
+          # No dependency cache in a job holding an OIDC token: a poisoned
+          # cache entry must never run next to publish credentials.
+          package-manager-cache: false
+          # No `registry-url`: it would write an .npmrc expecting
+          # NODE_AUTH_TOKEN; semantic-release handles npm auth itself.
+
+      - name: Check npm supports Trusted Publishing
+        run: |
+          npm_version=$(npm --version)
+          if ! node -e 'const [a,b,c]=process.argv[1].split(".").map(Number);process.exit(a>11||(a===11&&(b>5||(b===5&&c>=1)))?0:1)' "$npm_version"; then
+            echo "::error::npm $npm_version is too old for Trusted Publishing (needs >= 11.5.1)"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify registry signatures and provenance of dependencies
+        run: npm audit signatures
+
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Fallback only. Trusted Publishing is tried first; NPM_TOKEN is used
+          # only if the OIDC exchange fails, e.g. for the very first publish
+          # (npm can only attach a trusted publisher to an existing package).
+          # After bootstrapping: configure the trusted publisher, delete this
+          # secret, and set the package to "disallow tokens" on npmjs.com.
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npx --no-install semantic-release

@@ -1,0 +1,226 @@
+// @tanstack/query/infinite-query-property-order
+// Upstream: https://tanstack.com/query/latest/docs/eslint/infinite-query-property-order
+// Flags `getPreviousPageParam` / `getNextPageParam` written before `queryFn` in the object literal
+// passed to useInfiniteQuery / useSuspenseInfiniteQuery / infiniteQueryOptions (TypeScript infers
+// the page type from `queryFn`, so it must come first). Unlike upstream, only functions imported
+// from an `@tanstack/*-query` package are checked (aliases included), and the safe fix (a swap) is
+// only offered when it provably cannot change behaviour.
+language js
+
+// Entry point. Anchors on the call, then reports on the first page-param property that has a
+// `queryFn` somewhere after it (the first property upstream's sort would move).
+//
+// Performance note: in Biome 2.5.15 every variable bound by a successful match (here and in the
+// helpers it calls) makes the rest of the file's traversal slower, so this pattern deliberately
+// binds as few variables as possible (no `as $call`, no `as $x where { $x <: ... }` for checks
+// that can be written as `and { pattern, not r"..." }`).
+pattern tanstack_query_infinite_query_property_order() {
+  JsCallExpression(
+    // Upstream only looks at plain identifier callees: `useInfiniteQuery(...)`, never
+    // `ReactQuery.useInfiniteQuery(...)`.
+    callee = JsIdentifierExpression(name = $callee),
+    // Only the first argument, and only when it is an object literal.
+    arguments = JsCallArguments(args = [JsObjectExpression(members = $members), ...])
+  ) where {
+    // 1. Cheap, local check first: is there a page-param property followed (not necessarily
+    //    immediately) by `queryFn`? List patterns backtrack and return the first solution, so
+    //    `$first` is the LEFTMOST page param that has a `queryFn` after it (= the first property
+    //    upstream's sort would move), and `$query_fn` is the first `queryFn` after `$first`.
+    $members <: [
+      ...,
+      tanstack_query_infinite_query_property_order_page_param() as $first,
+      ...,
+      tanstack_query_infinite_query_property_order_query_fn() as $query_fn,
+      ...
+    ],
+    // 2. Only then pay for the import lookup: `$callee` must be bound by a value import of one of
+    //    the three target functions from an `@tanstack/*-query` package. Imports are top-level
+    //    module items, so a list pattern over `items` avoids a deep `contains` scan.
+    $first <: within JsModule(
+      items = [..., tanstack_query_infinite_query_property_order_import(local = $callee), ...]
+    ),
+    // 3. Fix: swap `$first` and `$query_fn` when that is provably behaviour-preserving.
+    or {
+      and {
+        // Both moved values are side-effect free, so evaluating them in another order is
+        // unobservable ...
+        $first <: tanstack_query_infinite_query_property_order_inert(),
+        $query_fn <: tanstack_query_infinite_query_property_order_inert(),
+        // ... and nothing between them decides which value wins: no spread (`...options` may
+        // carry its own `queryFn`) and no duplicate of the moved page-param key. (Already-bound
+        // variables used as list elements match by source text, which can only make this check
+        // more conservative.)
+        or {
+          and {
+            $first <: tanstack_query_infinite_query_property_order_get_next(),
+            $members <: not [
+              ...,
+              $first,
+              ...,
+              or { JsSpread(), tanstack_query_infinite_query_property_order_get_next() },
+              ...,
+              $query_fn,
+              ...
+            ]
+          },
+          and {
+            $first <: tanstack_query_infinite_query_property_order_get_previous(),
+            $members <: not [
+              ...,
+              $first,
+              ...,
+              or { JsSpread(), tanstack_query_infinite_query_property_order_get_previous() },
+              ...,
+              $query_fn,
+              ...
+            ]
+          }
+        },
+        // The rewrite. Only the two property NODES are exchanged: commas, comments and every other
+        // property stay in place, like upstream's fixer.
+        $first => $query_fn,
+        $query_fn => $first
+      },
+      // Otherwise: report only.
+      true
+    },
+    // 4. Report. Every diagnostic of this plugin uses fix_kind="safe", including report-only
+    //    ones: Biome 2.5.15 merges ALL rewrites of a plugin file into the fix of the FIRST
+    //    diagnostic in the file (with that diagnostic's fix_kind), so mixing kinds would make
+    //    `--write` behave differently depending on which violation comes first.
+    register_diagnostic(
+      span = $first,
+      message = `@tanstack/query/infinite-query-property-order: Invalid order of properties for \`$callee\`.`,
+      severity = "error",
+      fix_kind = "safe"
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Which properties are checked
+// ---------------------------------------------------------------------------------------------
+// Like upstream (which requires an `Identifier` key), only plain identifier keys count: string
+// keys such as `'queryFn': ...` do not match the code snippet (their text includes the quotes),
+// and computed keys are not matched either. Shorthand (`{ queryFn }`), methods (`queryFn() {}`)
+// and accessors count, as upstream.
+
+pattern tanstack_query_infinite_query_property_order_query_fn() {
+  or {
+    JsPropertyObjectMember(name = `queryFn`),
+    JsShorthandPropertyObjectMember(name = `queryFn`),
+    JsMethodObjectMember(name = `queryFn`),
+    JsGetterObjectMember(name = `queryFn`),
+    JsSetterObjectMember(name = `queryFn`)
+  }
+}
+
+pattern tanstack_query_infinite_query_property_order_get_next() {
+  or {
+    JsPropertyObjectMember(name = `getNextPageParam`),
+    JsShorthandPropertyObjectMember(name = `getNextPageParam`),
+    JsMethodObjectMember(name = `getNextPageParam`),
+    JsGetterObjectMember(name = `getNextPageParam`),
+    JsSetterObjectMember(name = `getNextPageParam`)
+  }
+}
+
+pattern tanstack_query_infinite_query_property_order_get_previous() {
+  or {
+    JsPropertyObjectMember(name = `getPreviousPageParam`),
+    JsShorthandPropertyObjectMember(name = `getPreviousPageParam`),
+    JsMethodObjectMember(name = `getPreviousPageParam`),
+    JsGetterObjectMember(name = `getPreviousPageParam`),
+    JsSetterObjectMember(name = `getPreviousPageParam`)
+  }
+}
+
+// Upstream sort groups: [queryFn] must come before [getPreviousPageParam, getNextPageParam].
+// The relative order of the two page-param callbacks does not matter.
+pattern tanstack_query_infinite_query_property_order_page_param() {
+  or {
+    tanstack_query_infinite_query_property_order_get_next(),
+    tanstack_query_infinite_query_property_order_get_previous()
+  }
+}
+
+// A member whose evaluation has no observable side effect: functions, plain references and static
+// member accesses (`api.fetchPage`; a getter with side effects on `api` is the one theoretical
+// exception), shorthand, methods and accessors. `queryFn: makeFetcher()` is not inert.
+pattern tanstack_query_infinite_query_property_order_inert() {
+  or {
+    JsPropertyObjectMember(
+      value = or {
+        JsArrowFunctionExpression(),
+        JsFunctionExpression(),
+        JsIdentifierExpression(),
+        JsStaticMemberExpression()
+      }
+    ),
+    JsShorthandPropertyObjectMember(),
+    JsMethodObjectMember(),
+    JsGetterObjectMember(),
+    JsSetterObjectMember()
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Import awareness (mirrors utils/detect-react-query-imports.ts: the source starts with
+// "@tanstack/" and ends with "-query"; value imports only)
+// ---------------------------------------------------------------------------------------------
+
+// `import { ... } from '@tanstack/x-query'` or `import def, { ... } from '@tanstack/x-query'`
+// whose specifiers bind `$local` to one of the target functions. Regexes must match the whole
+// node text, quotes included (hence the leading/trailing `.` around the module name). Angular's
+// adapter is still published as `@tanstack/angular-query-experimental`, and upstream (which matches
+// by callee name only) checks its `infiniteQueryOptions` too.
+pattern tanstack_query_infinite_query_property_order_import($local) {
+  and {
+    JsImport(
+      import_clause = or {
+        JsImportNamedClause(
+          named_specifiers = JsNamedImportSpecifiers(
+            specifiers = [..., tanstack_query_infinite_query_property_order_specifier(local = $local), ...]
+          ),
+          source = r"^.@tanstack/(?:[^'\"]*-query|angular-query-experimental).$"
+        ),
+        JsImportCombinedClause(
+          specifier = JsNamedImportSpecifiers(
+            specifiers = [..., tanstack_query_infinite_query_property_order_specifier(local = $local), ...]
+          ),
+          source = r"^.@tanstack/(?:[^'\"]*-query|angular-query-experimental).$"
+        )
+      }
+    ),
+    // `import type { ... }` cannot be called.
+    not r"import\s+type\s[\s\S]*"
+  }
+}
+
+// `useInfiniteQuery` or `useInfiniteQuery as useProjects`, but not `type useInfiniteQuery`.
+// Re-using the already-bound `$local` compares it by name with the callee.
+pattern tanstack_query_infinite_query_property_order_specifier($local) {
+  and {
+    or {
+      JsShorthandNamedImportSpecifier(
+        local_name = and {
+          $local,
+          or { `useInfiniteQuery`, `useSuspenseInfiniteQuery`, `infiniteQueryOptions` }
+        }
+      ),
+      // The imported name is a JsLiteralExportName, which code snippets do not match, so it is
+      // checked with a regex. Keep the explicit `^(?:...)$` group: Biome anchors a bare
+      // alternation only partly, so `useSuspenseInfiniteQueryX` or `xinfiniteQueryOptions` would
+      // slip through without it.
+      JsNamedImportSpecifier(
+        name = r"^(?:useInfiniteQuery|useSuspenseInfiniteQuery|infiniteQueryOptions)$",
+        local_name = $local
+      )
+    },
+    not r"type\s[\s\S]*"
+  }
+}
+
+// Entry point. The node-kind check in front lets Biome reject every other node
+// cheaply (see scripts/build-index.js); it must cover every node the rule reports on.
+and { JsCallExpression(), tanstack_query_infinite_query_property_order() }

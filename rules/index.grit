@@ -1,0 +1,2088 @@
+// GENERATED FILE - DO NOT EDIT. Run `npm run build` to regenerate.
+//
+// biome-plugin-tanstack-query@0.0.0-development: "recommended" preset.
+// Mirrors the "recommended" config of @tanstack/eslint-plugin-query@5.104.1.
+//
+// Rules: exhaustive-deps, infinite-query-property-order, mutation-property-order, no-rest-destructuring, no-unstable-deps, no-void-query-fn, stable-query-client
+//
+// Every rule is also published as a standalone plugin next to this file
+// (rules/<rule-name>.grit) if you want to cherry-pick or suppress rules
+// individually with `// biome-ignore lint/plugin/<rule-name>: <reason>`.
+
+language js
+
+// ----------------------------------------------------------------------------
+// @tanstack/query/exhaustive-deps
+// ----------------------------------------------------------------------------
+
+// Notes for readers learning GritQL from this file (Biome 2.5 engine specifics):
+// - Every GritQL variable in the plugin file (pattern parameters included) adds a fixed cost to
+//   EVERY syntax node Biome visits, so this file keeps them few (14). "Is a binding named $x" is
+//   written `and { JsIdentifierBinding(), $x }`: matching a node against a bound variable
+//   compares source text, so no extra variable is needed.
+// - A variable bound by an inline `contains` keeps its first value for the following matches;
+//   locals of a named pattern are fresh on every call. That is why the per-read check below is a
+//   named pattern (`tanstack_query_exhaustive_deps_read`).
+// - `or` rolls back the bindings of a failed branch, so two branches can bind the same variable;
+//   bindings made inside a `not` that succeeds are discarded too.
+// - When a bound variable successfully matches ANOTHER node (same text), it is re-bound to that
+//   node: later `within` checks on it then start from the wrong place. Order checks accordingly.
+// - `within` / `contains` are inclusive (a node is within / contains itself).
+// - Patterns cannot be recursive (stack overflow): chains are unrolled to a fixed depth.
+// - Every parameter name is unique in the file: calling a pattern with an argument variable whose
+//   name equals one of the callee's parameters silently fails to match.
+
+pattern tanstack_query_exhaustive_deps() {
+  // Any object literal with a `queryKey` and a `queryFn` as DIRECT members: useQuery,
+  // queryOptions, useSuspenseQuery, createQuery, query factories... Like upstream, the callee and
+  // the imports are not checked.
+  JsObjectExpression(members=and {
+    // `queryKey: <expr>` or shorthand `queryKey`. $key is the reported span (span ownership: the
+    // queryKey VALUE, never the call or the options object). Quoted / computed names never match.
+    some or {
+      JsPropertyObjectMember(name="queryKey", value=$key),
+      JsShorthandPropertyObjectMember(name="queryKey") as $key
+    },
+    some or {
+      JsPropertyObjectMember(name="queryFn", value=$query_fn),
+      JsMethodObjectMember(name="queryFn") as $query_fn
+    }
+  }) where {
+    // Only inline query functions have visible dependencies: `() => ...`, `function () {}`, the
+    // method `queryFn() {}`, `(async () => ...)`, or a ternary such as `c ? () => ... : skipToken`.
+    // `queryFn: fetchTodos` / `queryFn: makeFetcher(id)` are skipped, as upstream does.
+    $query_fn <: or {
+      tanstack_query_exhaustive_deps_inline_function(),
+      JsParenthesizedExpression(expression=tanstack_query_exhaustive_deps_inline_function()),
+      JsConditionalExpression()
+    },
+    // Upstream only inspects queries that live inside a function, and only treats as dependencies
+    // the names declared directly in the OUTERMOST enclosing function. Module-level queries are
+    // never reported (upstream makes an exception for .vue files only).
+    $key <: within tanstack_query_exhaustive_deps_function() as $outer where {
+      $outer <: not within and { tanstack_query_exhaustive_deps_function(), not $outer }
+    },
+    // Bind $source to the expression the key is built from. Upstream's
+    // `dereferenceVariablesAndTypeAssertions` follows `queryKey: key` to `const key = [...]`.
+    or {
+      and {
+        // `key`, shorthand `queryKey`, `key as const`, `(key)!`, ...: resolve the declaration.
+        $key <: or {
+          JsShorthandPropertyObjectMember(name=$key_name),
+          JsIdentifierExpression(name=$key_name),
+          tanstack_query_exhaustive_deps_wrapped(JsIdentifierExpression(name=$key_name)),
+          tanstack_query_exhaustive_deps_wrapped(tanstack_query_exhaustive_deps_wrapped(JsIdentifierExpression(name=$key_name))),
+          tanstack_query_exhaustive_deps_wrapped(tanstack_query_exhaustive_deps_wrapped(tanstack_query_exhaustive_deps_wrapped(JsIdentifierExpression(name=$key_name))))
+        },
+        or {
+          // The only binding of that name in the outermost function is `name = <init>`. (Other
+          // declarators of the same name with the very same initializer text are harmless.)
+          $outer <: and {
+            contains JsVariableDeclarator(
+              id=and { JsIdentifierBinding(), $key_name },
+              initializer=JsInitializerClause(expression=$source)
+            ),
+            not contains and {
+              JsIdentifierBinding(),
+              $key_name,
+              not within JsVariableDeclarator(initializer=JsInitializerClause(expression=$source))
+            }
+          },
+          // ...or a top-level (optionally exported) module `const` / `let` that the function does
+          // not shadow. Only the file's top-level statements are inspected (`JsScript` is the
+          // root of CommonJS `.cjs` files).
+          and {
+            $outer <: not contains and { JsIdentifierBinding(), $key_name },
+            $outer <: within or {
+              JsModule(items=some or {
+                JsVariableStatement(declaration=JsVariableDeclaration(declarators=some JsVariableDeclarator(
+                  id=and { JsIdentifierBinding(), $key_name },
+                  initializer=JsInitializerClause(expression=$source)
+                ))),
+                JsExport(export_clause=JsVariableDeclarationClause(declaration=JsVariableDeclaration(declarators=some JsVariableDeclarator(
+                  id=and { JsIdentifierBinding(), $key_name },
+                  initializer=JsInitializerClause(expression=$source)
+                ))))
+              }),
+              JsScript(statements=some JsVariableStatement(declaration=JsVariableDeclaration(declarators=some JsVariableDeclarator(
+                id=and { JsIdentifierBinding(), $key_name },
+                initializer=JsInitializerClause(expression=$source)
+              ))))
+            }
+          }
+        },
+        // An alias of an alias (`const key = otherKey`): give up rather than guess.
+        $source <: not tanstack_query_exhaustive_deps_key_reference()
+      },
+      // Any other key (`['todo', id]`, `todoKeys.detail(id)`, `[...] as const`) is used as is.
+      and {
+        $key <: not tanstack_query_exhaustive_deps_key_reference(),
+        $source = $key
+      }
+    },
+    // Collect every missing dependency name, in source order, then report them all at once.
+    $missing = [],
+    $query_fn <: contains tanstack_query_exhaustive_deps_read($missing, $source, $outer, $query_fn),
+    // Upstream message, with its {{deps}} placeholder filled in (root names, de-duplicated).
+    register_diagnostic(
+      span=$key,
+      message=join(list=["@tanstack/query/exhaustive-deps: The following dependencies are missing in your queryKey", join(list=distinct(list=$missing), separator=", ")], separator=": "),
+      severity="error"
+    )
+  }
+}
+
+// Every node that opens a function scope (upstream: FunctionDeclaration / FunctionExpression /
+// ArrowFunctionExpression, which in ESTree also covers class and object methods and accessors).
+pattern tanstack_query_exhaustive_deps_function() {
+  or {
+    JsArrowFunctionExpression(),
+    JsFunctionExpression(),
+    JsFunctionDeclaration(),
+    JsFunctionExportDefaultDeclaration(),
+    JsMethodObjectMember(),
+    JsMethodClassMember(),
+    JsGetterObjectMember(),
+    JsGetterClassMember(),
+    JsSetterObjectMember(),
+    JsSetterClassMember(),
+    JsConstructorClassMember()
+  }
+}
+
+// The function shapes upstream scans as a queryFn.
+pattern tanstack_query_exhaustive_deps_inline_function() {
+  or { JsArrowFunctionExpression(), JsFunctionExpression(), JsMethodObjectMember() }
+}
+
+// One value read inside the queryFn that is a dependency and is absent from the key: appends its
+// name to $read_missing. `contains` evaluates it on every node of the queryFn. GritQL stops at the
+// first failing condition, so the cheap and selective ones come first (check 5 must come last).
+pattern tanstack_query_exhaustive_deps_read($read_missing, $read_source, $read_outer, $read_fn) {
+  or {
+    // `id`, `props.id`, `map[key]`, `${id}`, `!!id`, `{ x: id }`, `<C id={id} />`, ...
+    JsIdentifierExpression(name=$dep_name),
+    // `{ id }` object shorthand reads `id` too.
+    JsShorthandPropertyObjectMember(name=$dep_name)
+  } where {
+    // 1. Not read anywhere in the key. Any read of the same root name counts, so
+    //    `queryKey: [state.foo]` covers `state.bar` (upstream would still require `state.bar`).
+    //    Reads inside a callback of the key that re-binds the name (`ids.map((id) => id)`) are
+    //    not the outer variable and do not count.
+    $read_source <: not contains and {
+      JsReferenceIdentifier(),
+      $dep_name,
+      not within and {
+        tanstack_query_exhaustive_deps_function(),
+        within $read_source,
+        contains and { JsIdentifierBinding(), $dep_name }
+      }
+    },
+    $dep_name <: not "undefined",
+    // 2. Not declared inside the queryFn (its parameters, locals, nested callbacks' parameters).
+    //    Name-based, so a same-named binding ANYWHERE in the queryFn hides the outer variable
+    //    (false negative rather than false positive).
+    $read_fn <: not contains and { JsIdentifierBinding(), $dep_name },
+    // 3. Read inside an inline function of the queryFn: for `c ? () => a : skipToken` this skips
+    //    the condition `c` and any branch that is not a function.
+    $dep_name <: within and {
+      tanstack_query_exhaustive_deps_inline_function(),
+      within $read_fn
+    },
+    // 4. Not exempted by its syntactic position (one walk up the ancestors):
+    $dep_name <: not within or {
+      // `fetchTodo(id)`, `api.todos.get(id)`, `a?.b!.c()`, `onDone?.()`: the root of a call
+      // target is not a dependency (upstream `isFunctionCallTarget`). Matching the callee head
+      // against $dep_name compares TEXT, so the read must also lie outside the call's arguments:
+      // in `date.format(date)` the argument `date` is still a dependency.
+      //   The arguments are checked FIRST (fields are matched in the order written): matching the
+      //   callee head re-binds $dep_name to it. $dep_scope is only a scratch variable here (it
+      //   saves a variable): bindings made inside a `not` that succeeds are discarded, so check 5
+      //   below still finds it unbound.
+      //   The callee is `head`, `head.a`, `head?.a[b]`, `head!.a.b.c`, ... Patterns cannot recurse,
+      //   so the member / non-null / parentheses chain is unrolled to 8 links; a callee chain
+      //   deeper than that is accepted whatever its head (a false negative for the computed
+      //   properties of such a chain, never a false positive).
+      JsCallExpression(
+        arguments=$dep_scope where { $dep_name <: not within $dep_scope },
+        callee=or {
+          $dep_name,
+          tanstack_query_exhaustive_deps_chain_link($dep_name),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name)),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name))),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name)))),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name))))),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name)))))),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name))))))),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($dep_name)))))))),
+          tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link(tanstack_query_exhaustive_deps_chain_link($_)))))))))
+        }
+      ),
+      // `new Foo()` / `new Foo(id)`: upstream skips identifiers whose PARENT is a NewExpression
+      // (so `new api.Client()` still needs `api`, as upstream).
+      JsNewExpression(callee=$dep_name),
+      JsNewExpression(arguments=JsCallArguments(args=some $dep_name)),
+      // `value instanceof Foo`: neither operand is a dependency.
+      JsInstanceofExpression(left=$dep_name),
+      JsInstanceofExpression(right=$dep_name)
+    },
+    // 5. Declared directly in the outermost function (upstream: `scope.set.has(name)` on that
+    //    function). Module-level variables, imports and globals never are. $dep_scope is bound to
+    //    the parameter list in the first branch and to the body in the second (`or` rolls back).
+    //    This check comes LAST: when `$dep_name` successfully matches the declaration, GritQL
+    //    re-binds `$dep_name` to that declaration node, and the positional checks 3 and 4 would
+    //    then look at the wrong node.
+    $read_outer <: or {
+      or {
+        JsArrowFunctionExpression(parameters=$dep_scope),
+        JsFunctionExpression(parameters=$dep_scope),
+        JsFunctionDeclaration(parameters=$dep_scope),
+        JsFunctionExportDefaultDeclaration(parameters=$dep_scope),
+        JsMethodObjectMember(parameters=$dep_scope),
+        JsMethodClassMember(parameters=$dep_scope),
+        JsConstructorClassMember(parameters=$dep_scope),
+        JsSetterObjectMember(parameter=$dep_scope),
+        JsSetterClassMember(parameter=$dep_scope)
+      } where {
+        // A parameter, destructured or not. Names bound inside a type annotation
+        // (`onChange: (url: string) => void`), a default value (`render = (id) => id`) or a
+        // decorator are not parameters of this function.
+        $dep_scope <: contains and {
+          JsIdentifierBinding(),
+          $dep_name,
+          not within and {
+            or { TsTypeAnnotation(), JsInitializerClause(), JsDecorator() },
+            within $read_outer
+          }
+        }
+      },
+      or {
+        JsArrowFunctionExpression(body=$dep_scope),
+        JsFunctionExpression(body=$dep_scope),
+        JsFunctionDeclaration(body=$dep_scope),
+        JsFunctionExportDefaultDeclaration(body=$dep_scope),
+        JsMethodObjectMember(body=$dep_scope),
+        JsMethodClassMember(body=$dep_scope),
+        JsConstructorClassMember(body=$dep_scope),
+        JsGetterObjectMember(body=$dep_scope),
+        JsGetterClassMember(body=$dep_scope),
+        JsSetterObjectMember(body=$dep_scope),
+        JsSetterClassMember(body=$dep_scope)
+      } where {
+        // A top-level `const` / `let` / `var` (destructured or not, but not a name bound inside
+        // a default value), function or class declaration of the body.
+        $dep_scope <: JsFunctionBody(statements=some or {
+          JsVariableStatement(declaration=JsVariableDeclaration(declarators=some JsVariableDeclarator(
+            id=contains and {
+              JsIdentifierBinding(),
+              $dep_name,
+              not within and { JsInitializerClause(), within $read_outer }
+            }
+          ))),
+          JsFunctionDeclaration(id=$dep_name),
+          JsClassDeclaration(id=$dep_name)
+        })
+      }
+    },
+    $read_missing += text($dep_name)
+  }
+}
+
+pattern tanstack_query_exhaustive_deps_chain_link($link_object) {
+  or {
+    JsStaticMemberExpression(object=$link_object),
+    JsComputedMemberExpression(object=$link_object),
+    TsNonNullAssertionExpression(expression=$link_object),
+    JsParenthesizedExpression(expression=$link_object)
+  }
+}
+
+// `key`, shorthand `queryKey`, and up to three `as` / `satisfies` / `!` / `<T>` / parentheses
+// around an identifier (`key as const`, `(key as unknown) as K`): a key whose content we cannot
+// see without resolving the identifier. (The main pattern spells the same shapes out once more to
+// bind the identifier's name: a pattern parameter would cost one more variable.)
+pattern tanstack_query_exhaustive_deps_key_reference() {
+  or {
+    JsShorthandPropertyObjectMember(),
+    JsIdentifierExpression(),
+    tanstack_query_exhaustive_deps_wrapped(JsIdentifierExpression()),
+    tanstack_query_exhaustive_deps_wrapped(tanstack_query_exhaustive_deps_wrapped(JsIdentifierExpression())),
+    tanstack_query_exhaustive_deps_wrapped(tanstack_query_exhaustive_deps_wrapped(tanstack_query_exhaustive_deps_wrapped(JsIdentifierExpression())))
+  }
+}
+
+pattern tanstack_query_exhaustive_deps_wrapped($wrapped) {
+  or {
+    TsAsExpression(expression=$wrapped),
+    TsSatisfiesExpression(expression=$wrapped),
+    TsNonNullAssertionExpression(expression=$wrapped),
+    TsTypeAssertionExpression(expression=$wrapped),
+    JsParenthesizedExpression(expression=$wrapped)
+  }
+}
+
+// ----------------------------------------------------------------------------
+// @tanstack/query/infinite-query-property-order
+// ----------------------------------------------------------------------------
+
+// Entry point. Anchors on the call, then reports on the first page-param property that has a
+// `queryFn` somewhere after it (the first property upstream's sort would move).
+//
+// Performance note: in Biome 2.5.15 every variable bound by a successful match (here and in the
+// helpers it calls) makes the rest of the file's traversal slower, so this pattern deliberately
+// binds as few variables as possible (no `as $call`, no `as $x where { $x <: ... }` for checks
+// that can be written as `and { pattern, not r"..." }`).
+pattern tanstack_query_infinite_query_property_order() {
+  JsCallExpression(
+    // Upstream only looks at plain identifier callees: `useInfiniteQuery(...)`, never
+    // `ReactQuery.useInfiniteQuery(...)`.
+    callee = JsIdentifierExpression(name = $callee),
+    // Only the first argument, and only when it is an object literal.
+    arguments = JsCallArguments(args = [JsObjectExpression(members = $members), ...])
+  ) where {
+    // 1. Cheap, local check first: is there a page-param property followed (not necessarily
+    //    immediately) by `queryFn`? List patterns backtrack and return the first solution, so
+    //    `$first` is the LEFTMOST page param that has a `queryFn` after it (= the first property
+    //    upstream's sort would move), and `$query_fn` is the first `queryFn` after `$first`.
+    $members <: [
+      ...,
+      tanstack_query_infinite_query_property_order_page_param() as $first,
+      ...,
+      tanstack_query_infinite_query_property_order_query_fn() as $query_fn,
+      ...
+    ],
+    // 2. Only then pay for the import lookup: `$callee` must be bound by a value import of one of
+    //    the three target functions from an `@tanstack/*-query` package. Imports are top-level
+    //    module items, so a list pattern over `items` avoids a deep `contains` scan.
+    $first <: within JsModule(
+      items = [..., tanstack_query_infinite_query_property_order_import(local = $callee), ...]
+    ),
+    // 3. Fix: swap `$first` and `$query_fn` when that is provably behaviour-preserving.
+    or {
+      and {
+        // Both moved values are side-effect free, so evaluating them in another order is
+        // unobservable ...
+        $first <: tanstack_query_infinite_query_property_order_inert(),
+        $query_fn <: tanstack_query_infinite_query_property_order_inert(),
+        // ... and nothing between them decides which value wins: no spread (`...options` may
+        // carry its own `queryFn`) and no duplicate of the moved page-param key. (Already-bound
+        // variables used as list elements match by source text, which can only make this check
+        // more conservative.)
+        or {
+          and {
+            $first <: tanstack_query_infinite_query_property_order_get_next(),
+            $members <: not [
+              ...,
+              $first,
+              ...,
+              or { JsSpread(), tanstack_query_infinite_query_property_order_get_next() },
+              ...,
+              $query_fn,
+              ...
+            ]
+          },
+          and {
+            $first <: tanstack_query_infinite_query_property_order_get_previous(),
+            $members <: not [
+              ...,
+              $first,
+              ...,
+              or { JsSpread(), tanstack_query_infinite_query_property_order_get_previous() },
+              ...,
+              $query_fn,
+              ...
+            ]
+          }
+        },
+        // The rewrite. Only the two property NODES are exchanged: commas, comments and every other
+        // property stay in place, like upstream's fixer.
+        $first => $query_fn,
+        $query_fn => $first
+      },
+      // Otherwise: report only.
+      true
+    },
+    // 4. Report. Every diagnostic of this plugin uses fix_kind="safe", including report-only
+    //    ones: Biome 2.5.15 merges ALL rewrites of a plugin file into the fix of the FIRST
+    //    diagnostic in the file (with that diagnostic's fix_kind), so mixing kinds would make
+    //    `--write` behave differently depending on which violation comes first.
+    register_diagnostic(
+      span = $first,
+      message = `@tanstack/query/infinite-query-property-order: Invalid order of properties for \`$callee\`.`,
+      severity = "error",
+      fix_kind = "safe"
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Which properties are checked
+// ---------------------------------------------------------------------------------------------
+// Like upstream (which requires an `Identifier` key), only plain identifier keys count: string
+// keys such as `'queryFn': ...` do not match the code snippet (their text includes the quotes),
+// and computed keys are not matched either. Shorthand (`{ queryFn }`), methods (`queryFn() {}`)
+// and accessors count, as upstream.
+
+pattern tanstack_query_infinite_query_property_order_query_fn() {
+  or {
+    JsPropertyObjectMember(name = `queryFn`),
+    JsShorthandPropertyObjectMember(name = `queryFn`),
+    JsMethodObjectMember(name = `queryFn`),
+    JsGetterObjectMember(name = `queryFn`),
+    JsSetterObjectMember(name = `queryFn`)
+  }
+}
+
+pattern tanstack_query_infinite_query_property_order_get_next() {
+  or {
+    JsPropertyObjectMember(name = `getNextPageParam`),
+    JsShorthandPropertyObjectMember(name = `getNextPageParam`),
+    JsMethodObjectMember(name = `getNextPageParam`),
+    JsGetterObjectMember(name = `getNextPageParam`),
+    JsSetterObjectMember(name = `getNextPageParam`)
+  }
+}
+
+pattern tanstack_query_infinite_query_property_order_get_previous() {
+  or {
+    JsPropertyObjectMember(name = `getPreviousPageParam`),
+    JsShorthandPropertyObjectMember(name = `getPreviousPageParam`),
+    JsMethodObjectMember(name = `getPreviousPageParam`),
+    JsGetterObjectMember(name = `getPreviousPageParam`),
+    JsSetterObjectMember(name = `getPreviousPageParam`)
+  }
+}
+
+// Upstream sort groups: [queryFn] must come before [getPreviousPageParam, getNextPageParam].
+// The relative order of the two page-param callbacks does not matter.
+pattern tanstack_query_infinite_query_property_order_page_param() {
+  or {
+    tanstack_query_infinite_query_property_order_get_next(),
+    tanstack_query_infinite_query_property_order_get_previous()
+  }
+}
+
+// A member whose evaluation has no observable side effect: functions, plain references and static
+// member accesses (`api.fetchPage`; a getter with side effects on `api` is the one theoretical
+// exception), shorthand, methods and accessors. `queryFn: makeFetcher()` is not inert.
+pattern tanstack_query_infinite_query_property_order_inert() {
+  or {
+    JsPropertyObjectMember(
+      value = or {
+        JsArrowFunctionExpression(),
+        JsFunctionExpression(),
+        JsIdentifierExpression(),
+        JsStaticMemberExpression()
+      }
+    ),
+    JsShorthandPropertyObjectMember(),
+    JsMethodObjectMember(),
+    JsGetterObjectMember(),
+    JsSetterObjectMember()
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Import awareness (mirrors utils/detect-react-query-imports.ts: the source starts with
+// "@tanstack/" and ends with "-query"; value imports only)
+// ---------------------------------------------------------------------------------------------
+
+// `import { ... } from '@tanstack/x-query'` or `import def, { ... } from '@tanstack/x-query'`
+// whose specifiers bind `$local` to one of the target functions. Regexes must match the whole
+// node text, quotes included (hence the leading/trailing `.` around the module name). Angular's
+// adapter is still published as `@tanstack/angular-query-experimental`, and upstream (which matches
+// by callee name only) checks its `infiniteQueryOptions` too.
+pattern tanstack_query_infinite_query_property_order_import($local) {
+  and {
+    JsImport(
+      import_clause = or {
+        JsImportNamedClause(
+          named_specifiers = JsNamedImportSpecifiers(
+            specifiers = [..., tanstack_query_infinite_query_property_order_specifier(local = $local), ...]
+          ),
+          source = r"^.@tanstack/(?:[^'\"]*-query|angular-query-experimental).$"
+        ),
+        JsImportCombinedClause(
+          specifier = JsNamedImportSpecifiers(
+            specifiers = [..., tanstack_query_infinite_query_property_order_specifier(local = $local), ...]
+          ),
+          source = r"^.@tanstack/(?:[^'\"]*-query|angular-query-experimental).$"
+        )
+      }
+    ),
+    // `import type { ... }` cannot be called.
+    not r"import\s+type\s[\s\S]*"
+  }
+}
+
+// `useInfiniteQuery` or `useInfiniteQuery as useProjects`, but not `type useInfiniteQuery`.
+// Re-using the already-bound `$local` compares it by name with the callee.
+pattern tanstack_query_infinite_query_property_order_specifier($local) {
+  and {
+    or {
+      JsShorthandNamedImportSpecifier(
+        local_name = and {
+          $local,
+          or { `useInfiniteQuery`, `useSuspenseInfiniteQuery`, `infiniteQueryOptions` }
+        }
+      ),
+      // The imported name is a JsLiteralExportName, which code snippets do not match, so it is
+      // checked with a regex. Keep the explicit `^(?:...)$` group: Biome anchors a bare
+      // alternation only partly, so `useSuspenseInfiniteQueryX` or `xinfiniteQueryOptions` would
+      // slip through without it.
+      JsNamedImportSpecifier(
+        name = r"^(?:useInfiniteQuery|useSuspenseInfiniteQuery|infiniteQueryOptions)$",
+        local_name = $local
+      )
+    },
+    not r"type\s[\s\S]*"
+  }
+}
+
+// ----------------------------------------------------------------------------
+// @tanstack/query/mutation-property-order
+// ----------------------------------------------------------------------------
+
+// PERFORMANCE NOTE: in Biome 2.5.15, every successful match of a plugin whose
+// top-level pattern is a named-pattern call costs time proportional to the file
+// size for EACH variable bound during the match. This rule therefore binds only
+// four variables ($members, $first, $late, $next) and spells everything else
+// inline or in variable-free helper patterns. (Variables declared anywhere in a
+// plugin file also slow down every node visit, which adds up in the presets.)
+pattern tanstack_query_mutation_property_order() {
+  JsCallExpression(
+    // A bare identifier callee only: `useMutation(...)` and
+    // `useMutation<TData, TError>(...)` match; `trpc.post.create.useMutation(...)`
+    // and `Query.useMutation(...)` do not (upstream requires an Identifier too).
+    // `and { ... }` checks two things about the same node without binding it.
+    callee=and { JsIdentifierExpression(), r"useMutation" },
+    // `args=[<first>, ...]` inspects the FIRST argument and ignores any others,
+    // exactly like upstream's `node.arguments[0]`. Only inline object literals
+    // are inspected (`useMutation(options)`, `useMutation(mutationOptions(...))`
+    // and Solid's `useMutation(() => ({ ... }))` are out of scope, as upstream).
+    // ESTree drops parentheses, so upstream also sees `useMutation(({ ... }))`;
+    // one level of parentheses is unwrapped here to match.
+    arguments=JsCallArguments(args=[or {
+      JsObjectExpression(members=$members),
+      JsParenthesizedExpression(expression=JsObjectExpression(members=$members))
+    }, ...])
+  ) where {
+    // 1. Detection. `$first` is the first `onError` / `onSettled` that has an
+    //    `onMutate` somewhere after it. This is the first property that the
+    //    upstream stable sort would move, so it is where we report.
+    $members <: [..., $first where { $first <: tanstack_query_mutation_property_order_late_callback() }, ..., tanstack_query_mutation_property_order_on_mutate(), ...],
+
+    // 2. Report, with a fix when one can be computed and is provably safe.
+    //    The first branch of the `or` that succeeds wins, so the fix-less
+    //    report in the second branch is only used when the first one fails:
+    //    whether we report never depends on whether we can fix.
+    or {
+      and {
+        // 2a. Which swap? Upstream sorts the three callbacks in one go, keeping
+        //     every other property (and all comments / separators) in its slot
+        //     and keeping the relative order of `onError` and `onSettled`. A
+        //     GritQL rewrite cannot sort a list, so we perform ONE step of a
+        //     bubble sort instead: swap a late callback `$late` with the
+        //     checked property `$next` that immediately follows it (skipping
+        //     unrelated properties) when that one is `onMutate`.
+        //     `biome lint --write` re-lints after every applied fix until
+        //     nothing changes, so the steps converge to exactly the upstream
+        //     output.
+        //
+        // 2b. Is the swap semantics-preserving? Both moved values must be free
+        //     of side effects (their evaluation order changes), and nothing
+        //     between them may define the same key: moving a callback across a
+        //     spread, a computed key or a quoted "onError" key could change
+        //     which definition wins. Upstream fixes these too; we only report.
+        //
+        //     Both questions are answered by one list pattern. The inner list
+        //     pattern binds `$next` to the FIRST member after `$late` that is
+        //     either a checked callback or a hazard (list patterns match
+        //     leftmost-first), and only then do we require it to be a
+        //     side-effect-free `onMutate`: a hazard in between makes `$next`
+        //     the hazard, so the swap is refused. All conditions sit inside the
+        //     `where` of `$late`, so the outer list pattern moves on to the
+        //     next late callback when one fails; any such swap is a valid step
+        //     towards the upstream order.
+        //     (A bound variable inside a list pattern is compared by TEXT, so
+        //     with two textually identical late callbacks the inner pattern
+        //     finds the first copy and the swap is refused: the property is
+        //     then reported without a fix, never fixed wrongly.)
+        $members <: [..., $late where {
+          $late <: tanstack_query_mutation_property_order_late_callback(),
+          $late <: tanstack_query_mutation_property_order_side_effect_free(),
+          $members <: [..., $late, ..., $next where { $next <: or {
+            tanstack_query_mutation_property_order_checked(),
+            tanstack_query_mutation_property_order_reorder_hazard()
+          } }, ...],
+          $next <: tanstack_query_mutation_property_order_on_mutate(),
+          $next <: tanstack_query_mutation_property_order_side_effect_free()
+        }, ...],
+
+        // 2c. Swap the two properties' text. This MUST come after every check
+        //     on `$late` / `$next`: once `$late => $next` has run, `$late <: ...`
+        //     sees the new text. Only the nodes themselves are rewritten, so
+        //     comments and the separators between properties stay where they
+        //     were, exactly like upstream's fixer.
+        $late => $next,
+        $next => $late,
+        register_diagnostic(span=$first, message="@tanstack/query/mutation-property-order: Invalid order of properties for `useMutation`.", severity="error", fix_kind="safe")
+      },
+      // 2d. No safe fix: report only. (Deliberately no "unsafe" fix: Biome
+      //     2.5.15 bundles every rewrite of a plugin file into the action of the
+      //     file's first diagnostic, so an unsafe rewrite here would leak into
+      //     `--write` whenever a safe diagnostic comes first.)
+      register_diagnostic(span=$first, message="@tanstack/query/mutation-property-order: Invalid order of properties for `useMutation`.", severity="error")
+    }
+  }
+}
+
+// A member named `onMutate` with a plain identifier key. Upstream only looks at
+// properties whose key is an Identifier, which in ESTree covers `key: value`,
+// shorthand `key`, methods `key() {}` and accessors `get key() {}`. Regex
+// patterns must match the whole node text, so `"onMutate"` (quoted) and
+// `[onMutate]` (computed) do not match, and neither does `onMutateX`.
+// Biome anchors a regex like `^...$` WITHOUT grouping it first, so an
+// alternation must be wrapped in `(?:...)`: plain r"onError|onSettled" would
+// also match `onErrorRetry`. (A capturing group `(...)` would instead be
+// treated as a GritQL variable binding and fail at runtime.)
+pattern tanstack_query_mutation_property_order_on_mutate() {
+  or {
+    JsPropertyObjectMember(name=r"onMutate"),
+    JsShorthandPropertyObjectMember(name=r"onMutate"),
+    JsMethodObjectMember(name=r"onMutate"),
+    JsGetterObjectMember(name=r"onMutate"),
+    JsSetterObjectMember(name=r"onMutate")
+  }
+}
+
+// `onError` and `onSettled` form one group: upstream does not care about their
+// relative order, only that both come after `onMutate`.
+pattern tanstack_query_mutation_property_order_late_callback() {
+  or {
+    JsPropertyObjectMember(name=r"(?:onError|onSettled)"),
+    JsShorthandPropertyObjectMember(name=r"(?:onError|onSettled)"),
+    JsMethodObjectMember(name=r"(?:onError|onSettled)"),
+    JsGetterObjectMember(name=r"(?:onError|onSettled)"),
+    JsSetterObjectMember(name=r"(?:onError|onSettled)")
+  }
+}
+
+// Any of the three order-sensitive callbacks.
+pattern tanstack_query_mutation_property_order_checked() {
+  or {
+    tanstack_query_mutation_property_order_on_mutate(),
+    tanstack_query_mutation_property_order_late_callback()
+  }
+}
+
+// A member whose position can be swapped without reordering side effects:
+// methods, accessors and shorthands run no code when the object is created, and
+// neither do function / arrow expressions, literals or plain references.
+pattern tanstack_query_mutation_property_order_side_effect_free() {
+  or {
+    JsShorthandPropertyObjectMember(),
+    JsMethodObjectMember(),
+    JsGetterObjectMember(),
+    JsSetterObjectMember(),
+    JsPropertyObjectMember(value=or {
+      JsArrowFunctionExpression(),
+      JsFunctionExpression(),
+      tanstack_query_mutation_property_order_reference(),
+      JsNullLiteralExpression(),
+      JsBooleanLiteralExpression(),
+      JsNumberLiteralExpression(),
+      JsStringLiteralExpression()
+    })
+  }
+}
+
+// `handler`, `this.handleError`, `handlers.onError`, `a?.b.c`: a chain of static
+// property reads rooted at an identifier or `this`. Patterns can be recursive.
+// Calls anywhere in the chain (`makeHandlers().onError`) are excluded: moving
+// them would reorder their side effects relative to the other properties. A
+// property read only runs code through a getter, which is not a realistic way
+// to supply mutation callbacks.
+pattern tanstack_query_mutation_property_order_reference() {
+  or {
+    JsIdentifierExpression(),
+    JsThisExpression(),
+    JsStaticMemberExpression(object=tanstack_query_mutation_property_order_reference())
+  }
+}
+
+// A member that, when one of the swapped callbacks moves across it, could
+// change which definition of a key wins at runtime.
+pattern tanstack_query_mutation_property_order_reorder_hazard() {
+  or {
+    JsSpread(),
+    JsPropertyObjectMember(name=JsComputedMemberName()),
+    JsMethodObjectMember(name=JsComputedMemberName()),
+    JsGetterObjectMember(name=JsComputedMemberName()),
+    JsSetterObjectMember(name=JsComputedMemberName()),
+    JsPropertyObjectMember(name=r"[\"'](?:onMutate|onError|onSettled)[\"']"),
+    JsMethodObjectMember(name=r"[\"'](?:onMutate|onError|onSettled)[\"']"),
+    JsGetterObjectMember(name=r"[\"'](?:onMutate|onError|onSettled)[\"']"),
+    JsSetterObjectMember(name=r"[\"'](?:onMutate|onError|onSettled)[\"']")
+  }
+}
+
+// ----------------------------------------------------------------------------
+// @tanstack/query/no-rest-destructuring
+// ----------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+//
+// The rule matches the node it reports on (a rest element or a spread) and
+// then looks UP for the hook call it comes from, so every evaluation reports
+// at most one diagnostic, on its own node.
+//
+// Performance notes (measured with Biome 2.5.15):
+// * Rest elements and spreads are common in React code, so the cheap checks
+//   come first (node kind, nearest ancestors). The hook call is looked up in
+//   the statement lists of the enclosing function bodies with list patterns
+//   (`[..., X, ...]`), and the imports and shadowing are only checked for
+//   candidates that already look like a finding.
+// * Every evaluation step copies the values of ALL variables declared
+//   anywhere in the plugin, so the rule keeps its variable count low: the
+//   main logic is written inline here instead of in many small predicates.
+// * The pattern never MATCHES: see `tanstack_query_no_rest_destructuring_report`.
+
+pattern tanstack_query_no_rest_destructuring() {
+  or {
+    // `...rest` in an object binding pattern:
+    //   const { data, ...rest } = useQuery(...)                  (1)
+    //   const [a, { data, ...rest }] = useQueries(...)           (2)
+    //   const query = useQuery(...); const { a, ...r } = query   (3)
+    JsObjectBindingPatternRest() as $rest where {
+      // `within` binds the NEAREST matching ancestor: the object pattern that
+      // directly owns `...rest` ...
+      $rest <: within JsObjectBindingPattern() as $object_pattern,
+      // ... and the nearest node that owns a binding pattern, which must be a
+      // variable declarator. A rest element in a callback parameter, e.g.
+      // `useQuery({ select: ({ a, ...others }) => others })`, belongs to that
+      // parameter even though a declarator encloses it further up.
+      $rest <: within tanstack_query_no_rest_destructuring_binding_owner() as $declarator,
+      or {
+        // (1) `const { data, ...rest } = useQuery(...)`
+        //
+        // Matching against an already bound variable compares source text.
+        // The rest element sits in the declarator's own binding pattern (see
+        // the owner check above), so `id = $object_pattern` holds exactly
+        // when the rest element is in the TOP-LEVEL pattern: `const { data:
+        // { a, ...b } } = useQuery()` spreads `data`, not the query result,
+        // and is left alone (as upstream does).
+        and {
+          $declarator <: JsVariableDeclarator(
+            id = $object_pattern,
+            initializer = tanstack_query_no_rest_destructuring_hook_call($hook)
+          ),
+          $hook <: tanstack_query_no_rest_destructuring_single_result_hook(),
+          $call_site = $declarator
+        },
+        // (2) `const [first, { data, ...rest }] = useQueries(...)`
+        //
+        // Like upstream, only DIRECT elements of the array pattern count, and
+        // an element with a default value (`{ data, ...rest } = {}`) does not.
+        and {
+          $object_pattern <: within JsArrayBindingPatternElement() as $element,
+          // GritQL cannot address the element's `pattern` field (`pattern` is
+          // a keyword), so the two are compared by text instead: they are
+          // identical exactly when the object pattern IS the element, without
+          // a default value.
+          $element <: $object_pattern,
+          // The element must belong to the declarator's own array pattern,
+          // not to a nested one such as `[[{ ...rest }]]`.
+          $element <: within JsArrayBindingPattern() as $array_pattern,
+          $declarator <: JsVariableDeclarator(
+            id = $array_pattern,
+            initializer = tanstack_query_no_rest_destructuring_hook_call($hook)
+          ),
+          $hook <: tanstack_query_no_rest_destructuring_multiple_results_hook(),
+          $call_site = $declarator
+        },
+        // (3) `const query = useQuery(...); const { data, ...rest } = query`
+        and {
+          $declarator <: JsVariableDeclarator(
+            id = $object_pattern,
+            initializer = JsInitializerClause(expression = JsIdentifierExpression(name = $name))
+          ),
+          tanstack_query_no_rest_destructuring_stored_result($declarator, $name, $hook, $call_site)
+        }
+      },
+      tanstack_query_no_rest_destructuring_is_tanstack_query_hook($hook, $call_site),
+      tanstack_query_no_rest_destructuring_report($rest)
+    },
+    // (4) `...query` where `query` holds a query result:
+    //   const query = useQuery(...); return { ...query, data: query.data[0] }
+    JsSpread(argument = JsIdentifierExpression(name = $name)) as $spread where {
+      tanstack_query_no_rest_destructuring_stored_result($spread, $name, $hook, $call_site),
+      tanstack_query_no_rest_destructuring_is_tanstack_query_hook($hook, $call_site),
+      tanstack_query_no_rest_destructuring_report($spread)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Building blocks
+// ---------------------------------------------------------------------------
+
+// Hooks that return ONE query result object (mirrors upstream `queryHooks`).
+pattern tanstack_query_no_rest_destructuring_single_result_hook() {
+  or { `useQuery`, `useInfiniteQuery`, `useSuspenseQuery`, `useSuspenseInfiniteQuery` }
+}
+
+// Hooks that return an ARRAY of query results.
+pattern tanstack_query_no_rest_destructuring_multiple_results_hook() {
+  or { `useQueries`, `useSuspenseQueries` }
+}
+
+// The initializer `= <hook>(...)`, with the hook called directly by name.
+// Like upstream, `Namespace.useQuery(...)`, `await`, `!` or `as` around the
+// call do not count.
+pattern tanstack_query_no_rest_destructuring_hook_call($hook) {
+  JsInitializerClause(expression = JsCallExpression(callee = JsIdentifierExpression(name = $hook)))
+}
+
+// Nodes that own a binding pattern. Patterns nested in default values, such
+// as `const { a = (({ ...r }) => r)(x) } = y`, belong to the nearest one.
+pattern tanstack_query_no_rest_destructuring_binding_owner() {
+  or { JsVariableDeclarator(), JsFormalParameter(), JsRestParameter(), JsCatchDeclaration() }
+}
+
+// Every node that starts a new function scope.
+pattern tanstack_query_no_rest_destructuring_function() {
+  or {
+    JsFunctionDeclaration(),
+    JsFunctionExpression(),
+    JsArrowFunctionExpression(),
+    JsMethodObjectMember(),
+    JsMethodClassMember(),
+    JsGetterObjectMember(),
+    JsSetterObjectMember(),
+    JsGetterClassMember(),
+    JsSetterClassMember(),
+    JsConstructorClassMember(),
+    JsStaticInitializationBlockClassMember()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stored query results, used by (3) and (4)
+// ---------------------------------------------------------------------------
+//
+// Upstream remembers the NAME of every variable that received a query result
+// and reports later uses of that name anywhere in the file. Without scope
+// analysis we stay conservative. `$use` (the spread or the destructuring)
+// refers to a query result when:
+//
+// * an enclosing function body declares `const $name = useQuery(...)` (or
+//   another single-result hook; also `let`/`var`, a type annotation, or one
+//   declarator among several) as one of its own statements. Hooks must be
+//   called at the top level of a component or custom hook anyway (Rules of
+//   Hooks), so looking at direct statements is enough; and
+// * no function, block, loop, `switch` or `catch` clause between that body
+//   and `$use` binds `$name` again (parameter, local variable, loop
+//   variable, ...), as `$name` would then refer to another value there.
+//
+// `useQueries` results are deliberately NOT tracked: spreading the returned
+// array (`[...queries]`) reads no property of the query results, so upstream
+// reporting it is a false positive.
+
+predicate tanstack_query_no_rest_destructuring_stored_result($use, $name, $hook, $call_site) {
+  // `within` tries the enclosing function bodies from the nearest outwards.
+  // `[..., X, ...]` matches a list with at least one element matching X.
+  // `$name` is already bound, so `id = $name` compares source text: it holds
+  // for the plain binding `query`, never for a destructuring pattern.
+  $use <: within JsFunctionBody(
+    statements = [
+      ...,
+      JsVariableStatement(
+        declaration = JsVariableDeclaration(
+          declarators = [
+            ...,
+            JsVariableDeclarator(id = $name, initializer = tanstack_query_no_rest_destructuring_hook_call($hook)),
+            ...
+          ]
+        )
+      ) as $call_site,
+      ...
+    ]
+  ) as $function_body,
+  // A name is declared once per scope, so the first declaration found is the
+  // only candidate: checking the hook name afterwards loses nothing.
+  $hook <: tanstack_query_no_rest_destructuring_single_result_hook(),
+  // Both `$inner_scope` and `$function_body` enclose `$use`, so the scope
+  // lies strictly inside the body exactly when its text does not include the
+  // body's text. (`includes` is a cheap substring test; `within
+  // $function_body` would compare the text of every ancestor up to the whole
+  // file.)
+  $use <: not within or {
+    tanstack_query_no_rest_destructuring_function(),
+    JsBlockStatement(),
+    JsForStatement(),
+    JsForInStatement(),
+    JsForOfStatement(),
+    // `case` clauses share one scope without braces:
+    // `switch (x) { case 1: const query = other; return { ...query } }`
+    JsSwitchStatement(),
+    JsCatchClause()
+  } as $inner_scope where {
+    $inner_scope <: not includes $function_body,
+    $inner_scope <: contains JsIdentifierBinding() as $shadow where { $shadow <: $name }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Import awareness (mirrors utils/detect-react-query-imports.ts)
+// ---------------------------------------------------------------------------
+//
+// `$hook` (e.g. `useQuery`), called at `$call_site`, is TanStack Query's hook
+// when:
+//
+// * its name is a named value import from a `@tanstack/*-query` package:
+//     import { useQuery } from '@tanstack/react-query'
+//     import { useQuery } from '@tanstack/vue-query'
+//   Like upstream this compares names only, so `import { useQuery as useQ }`
+//   makes `useQ(...)` invisible to the rule; and
+// * (stricter than upstream) no function enclosing the call binds the same
+//   name, so a local `const useQuery = () => ({ ... })`, a parameter named
+//   `useQuery` or a nested `function useQuery()` hides the import.
+
+predicate tanstack_query_no_rest_destructuring_is_tanstack_query_hook($hook, $call_site) {
+  // Imports are top-level statements, so only the module's own items are
+  // inspected.
+  $program <: JsModule(
+    items = [
+      ...,
+      JsImport(
+        import_clause = and {
+          // `import type { ... }` is not a value import (`import { type
+          // useQuery }` is one, as upstream). The `type` keyword cannot be
+          // addressed as a field, so look at the clause text: `type` followed
+          // by whitespace, `{` or a comment. (`import type, { x }` imports a
+          // default binding NAMED `type` and stays a value import.) Regexes
+          // match the WHOLE node text.
+          not r"type(?:\s|\{|/)[\s\S]*",
+          or {
+            // import { useQuery } from '...'
+            JsImportNamedClause(
+              named_specifiers = tanstack_query_no_rest_destructuring_specifiers($hook),
+              source = tanstack_query_no_rest_destructuring_module()
+            ),
+            // import Default, { useQuery } from '...'
+            JsImportCombinedClause(
+              specifier = tanstack_query_no_rest_destructuring_specifiers($hook),
+              source = tanstack_query_no_rest_destructuring_module()
+            )
+          }
+        }
+      ),
+      ...
+    ]
+  ),
+  // Only reached for real findings, so a `contains` over the enclosing
+  // functions is affordable here.
+  $call_site <: not within tanstack_query_no_rest_destructuring_function() as $function where {
+    $function <: contains JsIdentifierBinding() as $local where { $local <: $hook }
+  }
+}
+
+// Like upstream: the module starts with `@tanstack/` and ends with `-query`
+// (react-query, vue-query, solid-query, svelte-query, ...). The node text
+// includes the quotes.
+pattern tanstack_query_no_rest_destructuring_module() {
+  r"['\"]@tanstack/[^'\"]*-query['\"]"
+}
+
+// `{ useQuery }` or `{ something as useQuery }`
+pattern tanstack_query_no_rest_destructuring_specifiers($local_name) {
+  JsNamedImportSpecifiers(
+    specifiers = [
+      ...,
+      or {
+        JsShorthandNamedImportSpecifier(local_name = $local_name),
+        JsNamedImportSpecifier(local_name = $local_name)
+      },
+      ...
+    ]
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic
+// ---------------------------------------------------------------------------
+//
+// `false` after `register_diagnostic` is deliberate. The diagnostic is kept
+// (Biome collects it as a side effect), but the pattern itself never matches.
+// In Biome 2.5 every successful match of a plugin whose entry point is a named
+// pattern makes the evaluation of every LATER node in the file slower (the
+// cost grows with the number of matches so far). Measured on a 3,000-line
+// file with 200 findings: 93 s with a plain match, under 3 s with this trick.
+// The test suite fails loudly if a Biome version stops keeping diagnostics
+// from failed matches.
+
+predicate tanstack_query_no_rest_destructuring_report($span) {
+  register_diagnostic(
+    span = $span,
+    message = "@tanstack/query/no-rest-destructuring: Object rest destructuring on a query will observe all changes to the query, leading to excessive re-renders.",
+    severity = "warn"
+  ),
+  false
+}
+
+// ----------------------------------------------------------------------------
+// @tanstack/query/no-unstable-deps
+// ----------------------------------------------------------------------------
+
+// Entry point. Anchors on the call to the React hook and reports every offending identifier
+// INSIDE its dependency array (the identifier is this rule's span), e.g. `query` in
+//
+//   const query = useQuery(options)
+//   useEffect(() => { query.refetch() }, [query])
+//                                         ^^^^^
+//
+// PERFORMANCE: the GritQL engine in Biome 2.5 records every value a variable is bound to during a
+// SUCCESSFUL match in a history that lives for the rest of the file, and deep-copies that history
+// whenever it clones its state (for every visited node, `some` element, `within` ancestor...).
+// A rule that binds dozens of variables per match therefore makes all later matching slower with
+// every violation found (measured: 25-50 s on a 3,000-line file with 30 violations). `not` runs
+// its pattern on a throw-away copy of the state, so the whole check runs inside `not not { }`:
+// the diagnostics registered inside it are kept (they are a side channel), the bindings are
+// not, and a match leaves a single binding ($hook_call) behind.
+pattern tanstack_query_no_unstable_deps() {
+  // Upstream only looks at a second argument that is an array literal; more arguments are fine.
+  JsCallExpression(arguments = JsCallArguments(args = [$_, JsArrayExpression(), ...])) as $hook_call where {
+    not not and {
+      $hook_call <: JsCallExpression(callee = $callee, arguments = JsCallArguments(args = [$_, $array, ...])),
+      // `useEffect`, `React.useMemo`, `useAlias` (from `import { useCallback as useAlias }`) ...
+      // Binds $react_hook to the name used in the message.
+      $callee <: tanstack_query_no_unstable_deps_react_hook($react_hook),
+      // Check every DIRECT element of the array. Each invocation of a named pattern gets its own
+      // variable scope, so `some` reports every offending element, not just the first one.
+      $array <: JsArrayExpression(elements = some tanstack_query_no_unstable_deps_dependency($react_hook))
+    }
+  }
+}
+
+// One element of a dependency array. Only bare identifiers are considered, like upstream:
+// `[query.data]`, `[query!]`, `[fn(query)]` and `[...queries]` are never reported.
+pattern tanstack_query_no_unstable_deps_dependency($react_hook) {
+  JsIdentifierExpression(name = $name) as $dep where {
+    // 1. Some enclosing function body or block declares `$name` from a TanStack Query hook:
+    //    `const <name> = <hook call>` (or an array pattern element of one). Binds $query_hook to
+    //    the underlying hook (useQuery, useMutation, ...) and $decl_scope to that body/block.
+    $dep <: within or {
+      JsFunctionBody(statements = some tanstack_query_no_unstable_deps_tracked_statement($name, $query_hook)),
+      JsBlockStatement(statements = some tanstack_query_no_unstable_deps_tracked_statement($name, $query_hook))
+    } as $decl_scope,
+    // 2. ... and it is the NEAREST scope declaring `$name`: a parameter or `const` of the same
+    //    name in a nested function or block shadows the query result, as in JavaScript.
+    //    (`within` tries every ancestor, but once $scope is bound to the nearest declaring scope
+    //    the outer ones no longer match it.) Done second because step 1 rules out almost every
+    //    dependency with a cheap name comparison per statement.
+    $dep <: within tanstack_query_no_unstable_deps_local_scope($name, $scope),
+    $scope <: $decl_scope,
+    register_diagnostic(
+      span = $dep,
+      message = `@tanstack/query/no-unstable-deps: The result of $query_hook is not referentially stable, so don't pass it directly into the dependencies array of $react_hook. Instead, destructure the return value of $query_hook and pass the destructured values into the dependency array of $react_hook.`,
+      severity = "error"
+    )
+  }
+}
+
+// The callee of a React hook that takes a dependency array. Mirrors upstream `getReactHook`:
+//   - a bare `useEffect` / `useCallback` / `useMemo` identifier (upstream does not check where it
+//     comes from either),
+//   - `React.useEffect(...)` and friends, on an object literally named `React`,
+//   - a local alias imported from react: `import { useMemo as useStableValue } from 'react'`.
+//     (Upstream only recognises aliases imported from the exact specifier "React"; this port
+//     accepts both "react" and "React".)
+pattern tanstack_query_no_unstable_deps_react_hook($react_hook) {
+  or {
+    JsIdentifierExpression(name = $react_hook) where {
+      // GritQL anchors a regex as ^...$ without grouping: always wrap alternations in (?:...).
+      $react_hook <: r"(?:useEffect|useCallback|useMemo)"
+    },
+    JsStaticMemberExpression(object = JsIdentifierExpression(name = r"React"), member = $react_hook) where {
+      $react_hook <: r"(?:useEffect|useCallback|useMemo)"
+    },
+    JsIdentifierExpression(name = $react_hook) where {
+      // Hook aliases must still start with `use` (rules of hooks); checking the name first keeps
+      // ordinary calls like `fn(a, [b])` from scanning the imports.
+      $react_hook <: r"use[A-Z0-9].*",
+      // Cheap text test before scanning the imports: `import { useMemo as useX }`.
+      $program <: includes `as $react_hook`,
+      $react_hook <: within JsModule(items = some JsImport(import_clause = $clause) where {
+        $clause <: tanstack_query_no_unstable_deps_value_import($module),
+        // The module literal is matched with its quotes: "react" / 'react' (or "React").
+        $module <: r"['\"][Rr]eact['\"]",
+        $clause <: contains JsNamedImportSpecifier(
+          name = r"(?:useEffect|useCallback|useMemo)",
+          local_name = $local
+        ) where { $local <: $react_hook }
+      })
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lexical scopes
+// ---------------------------------------------------------------------------------------------
+
+// A function body, block or function-like node whose own declarations or parameters introduce
+// `$name`, bound to `$scope`. Used with `within`, this finds the scope a reference resolves to.
+// The module is not included: TanStack Query hooks cannot be called at the top level.
+pattern tanstack_query_no_unstable_deps_local_scope($name, $scope) {
+  or {
+    JsFunctionBody(statements = some tanstack_query_no_unstable_deps_declares($name)),
+    JsBlockStatement(statements = some tanstack_query_no_unstable_deps_declares($name)),
+    JsStaticInitializationBlockClassMember(statements = some tanstack_query_no_unstable_deps_declares($name)),
+    // Parameters shadow outer names: `function Inner(query) {}`, `(query) => useMemo(...)`.
+    JsFunctionDeclaration(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsFunctionExportDefaultDeclaration(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsFunctionExpression(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsArrowFunctionExpression(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsMethodClassMember(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsMethodObjectMember(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsConstructorClassMember(parameters = contains and { JsIdentifierBinding(), $name }),
+    JsSetterClassMember(parameter = contains and { JsIdentifierBinding(), $name }),
+    JsSetterObjectMember(parameter = contains and { JsIdentifierBinding(), $name }),
+    JsCatchClause(declaration = contains and { JsIdentifierBinding(), $name }),
+    JsForOfStatement(initializer = contains and { JsIdentifierBinding(), $name }),
+    JsForInStatement(initializer = contains and { JsIdentifierBinding(), $name }),
+    JsForStatement(initializer = contains and { JsIdentifierBinding(), $name })
+  } as $scope
+}
+
+// A statement of a function body or block that declares `$name`: a variable (including any
+// destructured name), a function or a class.
+pattern tanstack_query_no_unstable_deps_declares($name) {
+  or {
+    JsVariableStatement(declaration = JsVariableDeclaration(
+      declarators = some JsVariableDeclarator(id = contains and { JsIdentifierBinding(), $name })
+    )),
+    JsFunctionDeclaration(id = and { JsIdentifierBinding(), $name }),
+    JsClassDeclaration(id = and { JsIdentifierBinding(), $name })
+  }
+}
+
+// The callee `$name` of `$call`, resolved to its declaring scope: the nearest function / block /
+// parameter list declaring it, otherwise the module (imports and top-level declarations).
+pattern tanstack_query_no_unstable_deps_callee_scope($name, $scope) {
+  within or {
+    tanstack_query_no_unstable_deps_local_scope($name, $scope),
+    JsModule() as $scope
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Tracked declarations
+// ---------------------------------------------------------------------------------------------
+
+// `const|let|var` statement declaring `$name` from a TanStack Query hook result.
+// PERFORMANCE: this runs for every statement of every enclosing function body, for every
+// dependency. The substring test is a cheap text filter that skips almost every statement
+// before any structural matching (which copies the engine state at each step).
+pattern tanstack_query_no_unstable_deps_tracked_statement($name, $query_hook) {
+  and {
+    JsVariableStatement(),
+    includes $name,
+    JsVariableStatement(declaration = JsVariableDeclaration(
+      declarators = some tanstack_query_no_unstable_deps_tracked_declarator($name, $query_hook)
+    ))
+  }
+}
+
+// One declarator of `const|let|var` whose binding introduces `$name` and whose initializer is a
+// call whose result is a TanStack Query hook result (any declarator of a multi-declarator
+// statement). Mirrors upstream `collectVariableNames`:
+//   const query = useQuery(...)              -> query
+//   const [first, ...rest] = useQueries(...) -> first, rest
+// Object destructuring (`const { data } = useQuery(...)`) is the CORRECT pattern and never tracked.
+pattern tanstack_query_no_unstable_deps_tracked_declarator($name, $query_hook) {
+  JsVariableDeclarator(id = $binding, initializer = JsInitializerClause(expression = $init)) where {
+    // Cheapest first: the binding must introduce `$name` (a text comparison).
+    $binding <: or {
+      and { JsIdentifierBinding(), $name },
+      // `[a, , b, ...rest]`: an element / rest element that is exactly `$name`. Defaults and
+      // nested patterns (`[a = x]`, `[[a]]`, `[{ a }]`, `[...[a]]`) are not tracked upstream.
+      // (`pattern` is a GritQL keyword, so the elements' `pattern` field cannot be named.)
+      JsArrayBindingPattern(elements = some or {
+        JsArrayBindingPatternElement(),
+        JsArrayBindingPatternRestElement()
+      } as $element where {
+        $element <: contains and { JsIdentifierBinding(), $name },
+        not $element <: contains or { JsInitializerClause(), JsArrayBindingPattern(), JsObjectBindingPattern() }
+      })
+    },
+    $init <: tanstack_query_no_unstable_deps_tracked_call($query_hook)
+  }
+}
+
+// A call whose result is unstable: either a TanStack Query hook directly, or a call to a custom
+// hook (`use[A-Z0-9]...`) declared in this file that simply returns such a call.
+pattern tanstack_query_no_unstable_deps_tracked_call($query_hook) {
+  or {
+    tanstack_query_no_unstable_deps_query_hook_call($query_hook),
+    JsCallExpression(callee = JsIdentifierExpression(name = $custom_hook)) as $call where {
+      $custom_hook <: r"use[A-Z0-9][A-Za-z0-9_]*",
+      // React's built-in hooks are never wrappers around TanStack Query.
+      not $custom_hook <: r"(?:useState|useReducer|useRef|useContext|useMemo|useCallback|useEffect|useLayoutEffect|useInsertionEffect|useImperativeHandle|useId|useTransition|useDeferredValue|useSyncExternalStore|useOptimistic|useActionState|useFormStatus|useEffectEvent|useDebugValue)",
+      // PERFORMANCE: `useSelector()`, `useNavigate()`, ... are almost always imported. A cheap
+      // substring test on the file text rules out files that cannot define the wrapper before
+      // any scope is walked: a wrapper is written `function useX`, `const|let|var useX` or,
+      // as a later declarator of a statement, `useX =`.
+      $program <: or {
+        includes `function $custom_hook`,
+        includes `const $custom_hook`,
+        includes `let $custom_hook`,
+        includes `var $custom_hook`,
+        includes `$custom_hook =`
+      },
+      // Resolve the callee to its nearest declaration and require it to be a wrapper. A
+      // same-named local function or parameter therefore shadows a top-level wrapper, and
+      // wrappers declared inside other functions are found too (like upstream).
+      $call <: tanstack_query_no_unstable_deps_callee_scope($custom_hook, $hook_scope),
+      $hook_scope <: or {
+        JsFunctionBody(statements = $hook_scope_items),
+        JsBlockStatement(statements = $hook_scope_items),
+        JsModule(items = $hook_scope_items)
+      },
+      $hook_scope_items <: some tanstack_query_no_unstable_deps_custom_hook_definition($custom_hook, $query_hook)
+    }
+  }
+}
+
+// A (optionally exported) custom hook definition that returns the result of a TanStack Query
+// hook call. Mirrors upstream `getReturnedQueryHook`:
+//   function useTodos() { return useQuery(...) }
+//   export const useTodos = () => useQuery(...)
+//   const useTodos = function () { return useQuery(...) }
+//   export default function useTodos() { return useQuery(...) }
+// (Upstream additionally requires the body to contain exactly one top-level `return`; code after
+// a top-level return is unreachable, so this port only requires one returning the hook call.)
+pattern tanstack_query_no_unstable_deps_custom_hook_definition($custom_hook, $query_hook) {
+  or {
+    JsFunctionDeclaration(id = and { JsIdentifierBinding(), $custom_hook }, body = $body),
+    JsExport(export_clause = JsFunctionDeclaration(id = and { JsIdentifierBinding(), $custom_hook }, body = $body)),
+    JsExport(export_clause = JsExportDefaultDeclarationClause(declaration = JsFunctionExportDefaultDeclaration(
+      id = and { JsIdentifierBinding(), $custom_hook },
+      body = $body
+    ))),
+    JsVariableStatement(declaration = JsVariableDeclaration(
+      declarators = some tanstack_query_no_unstable_deps_wrapper_declarator($custom_hook, $body)
+    )),
+    JsExport(export_clause = JsVariableDeclarationClause(declaration = JsVariableDeclaration(
+      declarators = some tanstack_query_no_unstable_deps_wrapper_declarator($custom_hook, $body)
+    )))
+  } where {
+    // The body is (arrow shorthand) or returns at its top level a direct TanStack Query hook call.
+    $body <: or {
+      tanstack_query_no_unstable_deps_query_hook_call($query_hook),
+      JsFunctionBody(statements = some JsReturnStatement(
+        argument = tanstack_query_no_unstable_deps_query_hook_call($query_hook)
+      ))
+    }
+  }
+}
+
+// `useTodos = () => ...` / `useTodos = function () {...}` (any declarator of the statement);
+// binds `$body` to the function body.
+pattern tanstack_query_no_unstable_deps_wrapper_declarator($custom_hook, $body) {
+  JsVariableDeclarator(
+    id = and { JsIdentifierBinding(), $custom_hook },
+    initializer = JsInitializerClause(expression = or {
+      JsArrowFunctionExpression(body = $body),
+      JsFunctionExpression(body = $body)
+    })
+  )
+}
+
+// A direct call to a TanStack Query hook whose result object is not referentially stable,
+// imported from a `@tanstack/*-query` package (upstream `getDirectQueryHook`). The result of
+// useQueries / useSuspenseQueries with an inline `combine` option is user-controlled, so those
+// calls are excluded.
+pattern tanstack_query_no_unstable_deps_query_hook_call($query_hook) {
+  JsCallExpression(callee = JsIdentifierExpression(name = $query_hook)) as $call where {
+    $query_hook <: r"(?:useQuery|useSuspenseQuery|useQueries|useSuspenseQueries|useInfiniteQuery|useSuspenseInfiniteQuery|useMutation)",
+    // `useQueries({ ..., combine })`: an object literal first argument with a `combine` member.
+    not and {
+      $query_hook <: r"(?:useQueries|useSuspenseQueries)",
+      $call <: JsCallExpression(arguments = JsCallArguments(args = [
+        JsObjectExpression(members = some or {
+          JsPropertyObjectMember(name = r"combine"),
+          JsShorthandPropertyObjectMember(name = r"combine"),
+          JsMethodObjectMember(name = r"combine")
+        }),
+        ...
+      ]))
+    },
+    // The callee must resolve to the module scope (a same-named local function or parameter
+    // shadows the import) and be imported by name from any `@tanstack/<framework>-query`
+    // package, like upstream's `isTanstackQueryImport` (aliases match by their local name).
+    $call <: tanstack_query_no_unstable_deps_callee_scope($query_hook, $hook_scope),
+    $hook_scope <: JsModule(items = some JsImport(import_clause = $clause) where {
+      $clause <: tanstack_query_no_unstable_deps_value_import($module),
+      // Quotes are part of the module literal.
+      $module <: r"['\"]@tanstack/[^'\"]*-query['\"]",
+      $clause <: contains or {
+        JsShorthandNamedImportSpecifier(local_name = $local),
+        JsNamedImportSpecifier(local_name = $local)
+      } where { $local <: $query_hook }
+    })
+  }
+}
+
+// A named-import clause (`import { a } from "x"` or `import d, { a } from "x"`) that is not
+// `import type { ... }`; binds `$module` to its module specifier literal (quotes included).
+// (GritQL cannot pass a regex as a pattern argument, so callers match `$module` themselves.)
+pattern tanstack_query_no_unstable_deps_value_import($module) {
+  or {
+    JsImportNamedClause(source = $module) as $clause where {
+      not $clause <: r"type\s[\s\S]*"
+    },
+    JsImportCombinedClause(source = $module)
+  }
+}
+
+// ----------------------------------------------------------------------------
+// @tanstack/query/no-void-query-fn
+// ----------------------------------------------------------------------------
+
+// Performance notes (measured with Biome 2.5.15):
+// - The entry point runs on every node. Variables bound there, and calls to
+//   parameterized patterns, are paid for on every node (much more so inside
+//   the composed presets), so the entry point binds nothing and only does
+//   cheap kind checks before delegating.
+// - Sub-patterns are nested directly in field positions
+//   (`JsBlockStatement(statements=<pattern>)`) instead of being bound to
+//   `$variables` and tested in `where` clauses.
+// - Whole-file `contains` scans are slow, so lookups walk only the module's
+//   top-level items, and regexes (which need the node's text) come last.
+// - The identifier lookup spells `id=$name` inline instead of calling a
+//   pattern with a `name` parameter: that cut lint time from 0.93 s to
+//   0.62 s on a 3,600-line component file, and from 54 s to 15 s on a
+//   (pathological) file with 1,500 top-level declarations.
+
+// ---------------------------------------------------------------------------
+// Entry point. It runs on every node, so it binds no variables and only does
+// cheap kind checks before delegating (variables bound here would be paid for
+// on every node of every file, especially inside the composed presets).
+// ---------------------------------------------------------------------------
+pattern tanstack_query_no_void_query_fn() {
+  or {
+    // `queryFn: <function>` or `queryFn: <identifier>`. `name="queryFn"` only
+    // matches an identifier key: `'queryFn': ...` is ignored, like upstream
+    // (a computed `[queryFn]: ...` is ignored too; upstream checks it).
+    and {
+      JsPropertyObjectMember(name="queryFn"),
+      tanstack_query_no_void_query_fn_property()
+    },
+    // `queryFn() {...}`
+    and {
+      JsMethodObjectMember(name="queryFn"),
+      tanstack_query_no_void_query_fn_method()
+    },
+    // `{ queryFn }` naming a void top-level function.
+    and {
+      JsShorthandPropertyObjectMember(name="queryFn"),
+      tanstack_query_no_void_query_fn_shorthand()
+    }
+  }
+}
+
+// Every diagnostic is reported on the queryFn *value* (span ownership: other
+// rules own the hook call, the options object and the property keys). Cheap
+// local checks come first; the "is this TanStack Query?" check runs last.
+
+pattern tanstack_query_no_void_query_fn_property() {
+  JsPropertyObjectMember(value=$value) where {
+    $value <: or {
+      tanstack_query_no_void_query_fn_void_function(),
+      JsIdentifierExpression(name=tanstack_query_no_void_query_fn_void_reference())
+    },
+    $value <: tanstack_query_no_void_query_fn_in_query_options(),
+    register_diagnostic(
+      span=$value,
+      message="@tanstack/query/no-void-query-fn: queryFn must return a non-undefined value",
+      severity="error"
+    )
+  }
+}
+
+// ESLint reports the method's FunctionExpression, which has no Biome
+// counterpart, so we report on the method body.
+pattern tanstack_query_no_void_query_fn_method() {
+  JsMethodObjectMember(body=$body) as $method where {
+    $method <: tanstack_query_no_void_query_fn_void_function(),
+    $body <: tanstack_query_no_void_query_fn_in_query_options(),
+    register_diagnostic(
+      span=$body,
+      message="@tanstack/query/no-void-query-fn: queryFn must return a non-undefined value",
+      severity="error"
+    )
+  }
+}
+
+// `{ queryKey, queryFn }` where `queryFn` names a void top-level function.
+pattern tanstack_query_no_void_query_fn_shorthand() {
+  JsShorthandPropertyObjectMember(name=tanstack_query_no_void_query_fn_void_reference()) as $member where {
+    $member <: tanstack_query_no_void_query_fn_in_query_options(),
+    register_diagnostic(
+      span=$member,
+      message="@tanstack/query/no-void-query-fn: queryFn must return a non-undefined value",
+      severity="error"
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// `queryFn: fetchTodos` / `{ queryFn }`: resolve the identifier to a value
+// declared at the top level of the same file (optionally `export`ed):
+// `function name() {}`, `declare function name(): T`, overload signatures, or
+// `const name = <arrow | function>`. The lookup only walks the module's
+// top-level items, so it costs O(top-level items) per identifier. There is no
+// scope analysis in GritQL, so a reference is skipped whenever a scope
+// enclosing it re-declares the name.
+// ---------------------------------------------------------------------------
+pattern tanstack_query_no_void_query_fn_void_reference() {
+  and {
+    JsReferenceIdentifier() as $name where {
+      // 1. Find the FIRST top-level declaration of the name. `[..., p, ...]`
+      //    matches the leftmost item and never backtracks, so for an overloaded
+      //    function `$declaration` is its first signature, which is the one
+      //    whose return type the type checker (and upstream) uses. The lookup is
+      //    spelled inline instead of calling a pattern with a `name` parameter:
+      //    parameterized calls cost far more in Biome 2.5's engine.
+      $program <: JsModule(items=[..., or {
+        JsFunctionDeclaration(id=$name),
+        TsDeclareFunctionDeclaration(id=$name),
+        JsVariableStatement(declaration=JsVariableDeclaration(declarators=[..., JsVariableDeclarator(id=$name), ...])),
+        TsDeclareStatement(declaration=or {
+          TsDeclareFunctionDeclaration(id=$name),
+          JsVariableDeclarationClause(declaration=JsVariableDeclaration(declarators=[..., JsVariableDeclarator(id=$name), ...]))
+        }),
+        JsExport(export_clause=or {
+          JsFunctionDeclaration(id=$name),
+          TsDeclareFunctionDeclaration(id=$name),
+          JsVariableDeclarationClause(declaration=JsVariableDeclaration(declarators=[..., JsVariableDeclarator(id=$name), ...])),
+          TsExportDeclareClause(declaration=or {
+            TsDeclareFunctionDeclaration(id=$name),
+            JsVariableDeclarationClause(declaration=JsVariableDeclaration(declarators=[..., JsVariableDeclarator(id=$name), ...]))
+          })
+        })
+      } as $declaration, ...]),
+      // 2. That declaration is a void function. (`declare ...` is
+      //    TsDeclareStatement; `export declare ...` is TsExportDeclareClause.)
+      $declaration <: or {
+        tanstack_query_no_void_query_fn_void_declaration(),
+        JsVariableStatement(declaration=tanstack_query_no_void_query_fn_void_const()),
+        TsDeclareStatement(declaration=tanstack_query_no_void_query_fn_void_declaration()),
+        JsExport(export_clause=or {
+          tanstack_query_no_void_query_fn_void_declaration(),
+          TsExportDeclareClause(declaration=tanstack_query_no_void_query_fn_void_declaration())
+        })
+      }
+    },
+    // 3. No scope between the reference and the module re-declares the name.
+    //    This is a separate pattern on the same node, with its own variable:
+    //    matching `$name` against the declaration's identifier in step 1 can
+    //    rebind it to that identifier, whose ancestors are not the reference's.
+    //    It runs last because most references do not resolve to a void function.
+    JsReferenceIdentifier() as $reference where {
+      not $reference <: within tanstack_query_no_void_query_fn_shadowing_scope(name=$reference)
+    }
+  }
+}
+
+// A top-level declaration (without its `export` / `declare` wrapper) of a
+// void function. (`const` statements are matched by the caller.)
+// (`and` evaluates in order: the regex, which needs the node's text, only runs
+// once the cheap structural checks have passed.)
+pattern tanstack_query_no_void_query_fn_void_declaration() {
+  or {
+    // `function load() {...}`. When the function is overloaded, the lookup
+    // stops at the first signature (below) and never reaches this body.
+    and {
+      JsFunctionDeclaration(),
+      tanstack_query_no_void_query_fn_void_function()
+    },
+    // Overload signature `function load(): Promise<void>` or ambient
+    // `declare function load(): Promise<void>`: only the annotation counts (a
+    // missing one is implicitly `any`).
+    TsDeclareFunctionDeclaration(return_type_annotation=TsReturnTypeAnnotation(ty=tanstack_query_no_void_query_fn_void_type())),
+    // `const load = <function>` with a single declarator (`let`/`var`
+    // bindings can be reassigned). A type annotation on the variable is its
+    // type, so it decides on its own: `const load: QueryFunction<Todo[]> =
+    // async () => {...}` is never reported, whatever the function's body is.
+    JsVariableDeclarationClause(declaration=tanstack_query_no_void_query_fn_void_const())
+  }
+}
+
+pattern tanstack_query_no_void_query_fn_void_const() {
+  and {
+    JsVariableDeclaration(declarators=[or {
+      JsVariableDeclarator(variable_annotation=TsTypeAnnotation(ty=tanstack_query_no_void_query_fn_void_function_type())),
+      JsVariableDeclarator(variable_annotation=., initializer=JsInitializerClause(expression=or {
+        JsArrowFunctionExpression(),
+        JsFunctionExpression()
+      }))
+    }]),
+    r"const\s[\s\S]*",
+    JsVariableDeclaration(declarators=[or {
+      JsVariableDeclarator(variable_annotation=TsTypeAnnotation()),
+      JsVariableDeclarator(initializer=JsInitializerClause(expression=tanstack_query_no_void_query_fn_void_function()))
+    }])
+  }
+}
+
+// A function type whose return type is void: `() => Promise<void>`,
+// `QueryFunction<void>` (TanStack's `QueryFunction<T>` returns `T | Promise<T>`).
+pattern tanstack_query_no_void_query_fn_void_function_type() {
+  or {
+    TsFunctionType(return_type=tanstack_query_no_void_query_fn_void_type()),
+    TsParenthesizedType(ty=tanstack_query_no_void_query_fn_void_function_type()),
+    TsReferenceType(
+      name="QueryFunction",
+      type_arguments=TsTypeArguments(ts_type_argument_list=[tanstack_query_no_void_query_fn_void_type(), ...])
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Is this `queryFn` a TanStack Query one? Yes when the object literal that
+// directly contains it also has a `queryKey` member (`{ queryKey, queryFn }`
+// is TanStack Query's signature, so this also covers files that import the
+// hooks through a project wrapper), or when the file imports from a TanStack
+// Query package (`@tanstack/react-query`, `@tanstack/vue-query`,
+// `@tanstack/query-core`, ...; `import type` counts too). Other libraries'
+// `queryFn` keys (RTK Query endpoints, ...) have no `queryKey` sibling.
+// ---------------------------------------------------------------------------
+pattern tanstack_query_no_void_query_fn_in_query_options() {
+  or {
+    // `until` stops at the nearest enclosing object literal, so a `queryKey`
+    // of an outer object (`{ queryKey, meta: { queryFn } }`) does not count.
+    within JsObjectExpression(members=[..., or {
+      JsPropertyObjectMember(name="queryKey"),
+      JsShorthandPropertyObjectMember(name="queryKey")
+    }, ...]) until JsObjectExpression(),
+    // `[..., p, ...]` means "some element matches p"; it walks only the
+    // module's top-level items, since imports cannot be nested. The regex
+    // needs the node's text, so it comes after the structural check. (Reached
+    // with `within` rather than `$program <:` from a predicate with a
+    // parameter, which costs about 25 ms per diagnostic on a 3,600-line file.)
+    within JsModule(items=[..., JsImport(import_clause=contains and {
+      JsModuleSource(),
+      r"[\"']@tanstack/[a-z0-9-]*query[a-z0-9-]*[\"']"
+    }), ...])
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A function node (arrow, function expression, function declaration or object
+// method) whose awaited return type is certainly void/undefined, or a union
+// containing one of them.
+// ---------------------------------------------------------------------------
+pattern tanstack_query_no_void_query_fn_void_function() {
+  or {
+    // 1. An explicit return type annotation decides on its own, exactly like
+    //    the type checker would: `(): Promise<void> => ...` is reported,
+    //    `(): Promise<Todo[]> => {...}` never is, whatever its body says.
+    JsArrowFunctionExpression(return_type_annotation=TsReturnTypeAnnotation(ty=tanstack_query_no_void_query_fn_void_type())),
+    JsFunctionExpression(return_type_annotation=TsReturnTypeAnnotation(ty=tanstack_query_no_void_query_fn_void_type())),
+    JsFunctionDeclaration(return_type_annotation=TsReturnTypeAnnotation(ty=tanstack_query_no_void_query_fn_void_type())),
+    JsMethodObjectMember(return_type_annotation=TsReturnTypeAnnotation(ty=tanstack_query_no_void_query_fn_void_type())),
+
+    // 2. Concise arrow body: `() => undefined`, `async () => void save()`,
+    //    `() => cond ? data : undefined`, `() => Promise.resolve()`, ...
+    JsArrowFunctionExpression(return_type_annotation=., body=tanstack_query_no_void_query_fn_undefined_expression()),
+
+    // 3. Block body of a function *expression*. (Arrows cannot be generators;
+    //    the regex rules out `function*` / `*method()`, which return a
+    //    Generator object.)
+    JsArrowFunctionExpression(return_type_annotation=., body=tanstack_query_no_void_query_fn_void_expression_body()),
+    and {
+      or {
+        JsFunctionExpression(return_type_annotation=., body=tanstack_query_no_void_query_fn_void_expression_body()),
+        JsMethodObjectMember(return_type_annotation=., body=tanstack_query_no_void_query_fn_void_expression_body())
+      },
+      not r"(?:async\s+)?(?:function\s*)?\*[\s\S]*"
+    },
+
+    // 4. Block body of a function *declaration* (reached through a reference).
+    //    A declaration that returns nothing is inferred as `void` even when it
+    //    always throws, so reachability does not matter here.
+    and {
+      JsFunctionDeclaration(return_type_annotation=., body=or {
+        tanstack_query_no_void_query_fn_void_body(),
+        tanstack_query_no_void_query_fn_returns_nothing()
+      }),
+      not r"(?:async\s+)?function\s*\*[\s\S]*"
+    }
+  }
+}
+
+// A type annotation that resolves (after awaiting) to void, undefined, or a
+// union containing one of them: `void`, `undefined`, `Promise<void>`,
+// `Promise<Todo | undefined>`, `PromiseLike<void>`, `Todo | undefined`, `(void)`.
+pattern tanstack_query_no_void_query_fn_void_type() {
+  or {
+    TsVoidType(),
+    TsUndefinedType(),
+    TsParenthesizedType(ty=tanstack_query_no_void_query_fn_void_type()),
+    TsUnionType(types=[..., tanstack_query_no_void_query_fn_void_type(), ...]),
+    TsReferenceType(
+      name=or { "Promise", "PromiseLike" },
+      type_arguments=TsTypeArguments(ts_type_argument_list=[tanstack_query_no_void_query_fn_void_type()])
+    )
+  }
+}
+
+// An expression whose value is certainly `undefined` (or a union with it).
+pattern tanstack_query_no_void_query_fn_undefined_expression() {
+  or {
+    `undefined`,
+    `void $_`,
+    JsParenthesizedExpression(expression=tanstack_query_no_void_query_fn_undefined_expression()),
+    // Either branch being undefined puts `undefined` in the union.
+    JsConditionalExpression(consequent=tanstack_query_no_void_query_fn_undefined_expression()),
+    JsConditionalExpression(alternate=tanstack_query_no_void_query_fn_undefined_expression()),
+    JsAwaitExpression(argument=tanstack_query_no_void_query_fn_undefined_expression()),
+    `Promise.resolve()`,
+    JsCallExpression(
+      callee=`Promise.resolve`,
+      arguments=JsCallArguments(args=[tanstack_query_no_void_query_fn_undefined_expression()])
+    ),
+    `new Promise<void>($_)`,
+    `new Promise<undefined>($_)`,
+    // Every `console.*` method is typed `void`.
+    JsCallExpression(callee=`console.$_`),
+    // `fetch(url).then((res) => { res.json() })`: the callback returns void,
+    // so the promise resolves to void.
+    JsCallExpression(
+      callee=JsStaticMemberExpression(member="then"),
+      arguments=JsCallArguments(args=[tanstack_query_no_void_query_fn_void_function(), ...])
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Block bodies.
+// ---------------------------------------------------------------------------
+
+// Nested functions and classes have their own `return`s: never look inside.
+pattern tanstack_query_no_void_query_fn_nested_scope() {
+  or {
+    JsArrowFunctionExpression(),
+    JsFunctionExpression(),
+    JsFunctionDeclaration(),
+    JsMethodObjectMember(),
+    JsGetterObjectMember(),
+    JsSetterObjectMember(),
+    JsClassDeclaration(),
+    JsClassExpression()
+  }
+}
+
+// A body without any `return <value>` of its own.
+pattern tanstack_query_no_void_query_fn_returns_nothing() {
+  JsFunctionBody(statements=not contains JsReturnStatement(argument=not .) until tanstack_query_no_void_query_fn_nested_scope())
+}
+
+// Body of a function *expression* whose return type includes `undefined`.
+pattern tanstack_query_no_void_query_fn_void_expression_body() {
+  or {
+    tanstack_query_no_void_query_fn_void_body(),
+    // Nothing is ever returned: `void`, provided the end of the body is
+    // reachable (a function expression that can only throw is `never`).
+    // Calls are trusted to return here: a queryFn whose last statement is a
+    // `never`-returning helper and that returns nothing is not realistic.
+    and {
+      JsFunctionBody(statements=tanstack_query_no_void_query_fn_list_falls_through()),
+      tanstack_query_no_void_query_fn_returns_nothing()
+    }
+  }
+}
+
+// A body whose return type includes `undefined`, whether or not it also
+// returns values on other paths.
+pattern tanstack_query_no_void_query_fn_void_body() {
+  or {
+    // The end of the body is reachable (missing `else`, `catch` without a
+    // return, ...). This uses the *strict* reachability check: when values
+    // are returned elsewhere, a trailing `handleError(e)` may well be a
+    // `never`-returning helper, so unknown calls do not count as completing.
+    JsFunctionBody(statements=tanstack_query_no_void_query_fn_list_falls_through_strict()),
+    // `return;`, `return undefined`, `return cond ? x : undefined`, ...
+    JsFunctionBody(statements=contains JsReturnStatement(argument=or {
+      .,
+      tanstack_query_no_void_query_fn_undefined_expression()
+    }) until tanstack_query_no_void_query_fn_nested_scope())
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reachability. `list_falls_through` matches a statement list whose end is
+// certainly reachable: EVERY statement in it can complete normally, so an
+// early `return`/`throw` makes the rest of the list unreachable, and hoisted
+// declarations after a `return` (`return parse(x); function parse() {...}`)
+// do not count as reaching the end.
+//
+// There are two copies of this small analysis: the loose one trusts every
+// expression statement to complete, the strict one also requires the LAST
+// statement not to be a call (other than `console.*`), since a trailing
+// `handleError(e)` may be a `never`-returning helper. They are duplicated
+// rather than parameterized because passing a parameter through a recursive
+// pattern makes Biome 2.5's GritQL engine blow up exponentially.
+//
+// Anything not listed (return, throw, break, continue, labeled blocks,
+// `while (true)`, `do ... while (true)`, ...) is treated as "may not
+// complete", which can only cause false negatives.
+// ---------------------------------------------------------------------------
+pattern tanstack_query_no_void_query_fn_list_falls_through() {
+  // "No statement fails to complete" (also true of an empty list).
+  not [..., not tanstack_query_no_void_query_fn_falls_through(), ...]
+}
+
+pattern tanstack_query_no_void_query_fn_falls_through() {
+  or {
+    // Calls to well-known `never`-returning functions end the body.
+    JsExpressionStatement(expression=not JsCallExpression(callee=or {
+      `process.exit`,
+      `notFound`,
+      `redirect`,
+      `permanentRedirect`,
+      `forbidden`,
+      `unauthorized`
+    })),
+    tanstack_query_no_void_query_fn_simple_statement(),
+    JsIfStatement(consequent=tanstack_query_no_void_query_fn_falls_through()),
+    JsIfStatement(else_clause=JsElseClause(alternate=tanstack_query_no_void_query_fn_falls_through())),
+    JsBlockStatement(statements=tanstack_query_no_void_query_fn_list_falls_through()),
+    // `do {...} while (c)` ends normally when its body does.
+    JsDoWhileStatement(test=not `true`, body=tanstack_query_no_void_query_fn_falls_through()),
+    // try/catch: falls through if either the try block or the catch block does.
+    JsTryStatement(body=tanstack_query_no_void_query_fn_falls_through()),
+    JsTryStatement(catch_clause=JsCatchClause(body=tanstack_query_no_void_query_fn_falls_through())),
+    // try/(catch/)finally: the finally block must fall through as well.
+    JsTryFinallyStatement(
+      finally_clause=JsFinallyClause(body=tanstack_query_no_void_query_fn_falls_through()),
+      body=tanstack_query_no_void_query_fn_falls_through()
+    ),
+    JsTryFinallyStatement(
+      finally_clause=JsFinallyClause(body=tanstack_query_no_void_query_fn_falls_through()),
+      catch_clause=JsCatchClause(body=tanstack_query_no_void_query_fn_falls_through())
+    ),
+    // switch: the last clause falls out of the statement.
+    JsSwitchStatement(cases=[..., or {
+      JsCaseClause(consequent=tanstack_query_no_void_query_fn_list_falls_through()),
+      JsDefaultClause(consequent=tanstack_query_no_void_query_fn_list_falls_through())
+    }])
+  }
+}
+
+pattern tanstack_query_no_void_query_fn_list_falls_through_strict() {
+  or {
+    [],
+    and {
+      not [..., not tanstack_query_no_void_query_fn_falls_through(), ...],
+      [..., tanstack_query_no_void_query_fn_falls_through_strict()]
+    }
+  }
+}
+
+pattern tanstack_query_no_void_query_fn_falls_through_strict() {
+  or {
+    // Only expressions that cannot be a call to a `never`-returning helper.
+    JsExpressionStatement(expression=or { not JsCallExpression(), JsCallExpression(callee=`console.$_`) }),
+    tanstack_query_no_void_query_fn_simple_statement(),
+    JsIfStatement(consequent=tanstack_query_no_void_query_fn_falls_through_strict()),
+    JsIfStatement(else_clause=JsElseClause(alternate=tanstack_query_no_void_query_fn_falls_through_strict())),
+    JsBlockStatement(statements=tanstack_query_no_void_query_fn_list_falls_through_strict()),
+    JsDoWhileStatement(test=not `true`, body=tanstack_query_no_void_query_fn_falls_through_strict()),
+    JsTryStatement(body=tanstack_query_no_void_query_fn_falls_through_strict()),
+    JsTryStatement(catch_clause=JsCatchClause(body=tanstack_query_no_void_query_fn_falls_through_strict())),
+    JsTryFinallyStatement(
+      finally_clause=JsFinallyClause(body=tanstack_query_no_void_query_fn_falls_through_strict()),
+      body=tanstack_query_no_void_query_fn_falls_through_strict()
+    ),
+    JsTryFinallyStatement(
+      finally_clause=JsFinallyClause(body=tanstack_query_no_void_query_fn_falls_through_strict()),
+      catch_clause=JsCatchClause(body=tanstack_query_no_void_query_fn_falls_through_strict())
+    ),
+    JsSwitchStatement(cases=[..., or {
+      JsCaseClause(consequent=tanstack_query_no_void_query_fn_list_falls_through_strict()),
+      JsDefaultClause(consequent=tanstack_query_no_void_query_fn_list_falls_through_strict())
+    }])
+  }
+}
+
+// Statements that complete in both analyses.
+pattern tanstack_query_no_void_query_fn_simple_statement() {
+  or {
+    JsVariableStatement(),
+    JsEmptyStatement(),
+    JsDebuggerStatement(),
+    JsFunctionDeclaration(),
+    JsClassDeclaration(),
+    TsTypeAliasDeclaration(),
+    TsInterfaceDeclaration(),
+    // `if (c) {...}` without `else`: the implicit else path falls through.
+    JsIfStatement(test=not `true`, else_clause=.),
+    // Iterating loops end normally (a `return` inside only exits early).
+    JsForOfStatement(),
+    JsForInStatement(),
+    JsWhileStatement(test=not `true`),
+    JsForStatement(test=and { not ., not `true` }),
+    // The same loops with a label (`outer: for (...) {...}`).
+    JsLabeledStatement(body=or {
+      JsForOfStatement(),
+      JsForInStatement(),
+      JsWhileStatement(test=not `true`),
+      JsForStatement(test=and { not ., not `true` })
+    }),
+    // A switch without `default`, or one that some clause `break`s out of.
+    JsSwitchStatement(cases=not [..., JsDefaultClause(), ...]),
+    JsSwitchStatement(cases=contains JsBreakStatement(label=.) until or {
+      tanstack_query_no_void_query_fn_nested_scope(),
+      JsSwitchStatement(),
+      JsForStatement(),
+      JsForOfStatement(),
+      JsForInStatement(),
+      JsWhileStatement(),
+      JsDoWhileStatement()
+    })
+  }
+}
+
+// An ancestor of the reference that binds `$name` for it. Only the binding
+// positions of each ancestor are inspected (`until JsInitializerClause()`
+// skips initializers and default values), so the cost stays proportional to
+// the number of statements of the enclosing blocks, not to their size.
+pattern tanstack_query_no_void_query_fn_shadowing_scope($name) {
+  or {
+    JsFunctionBody(statements=[..., tanstack_query_no_void_query_fn_declares(name=$name), ...]),
+    JsBlockStatement(statements=[..., tanstack_query_no_void_query_fn_declares(name=$name), ...]),
+    JsCaseClause(consequent=[..., tanstack_query_no_void_query_fn_declares(name=$name), ...]),
+    JsDefaultClause(consequent=[..., tanstack_query_no_void_query_fn_declares(name=$name), ...]),
+    JsStaticInitializationBlockClassMember(statements=[..., tanstack_query_no_void_query_fn_declares(name=$name), ...]),
+    // `namespace NS { function load() {...} }` (exported or not).
+    TsModuleBlock(items=[..., or {
+      tanstack_query_no_void_query_fn_declares(name=$name),
+      JsExport(export_clause=or {
+        tanstack_query_no_void_query_fn_declares(name=$name),
+        JsVariableDeclarationClause(declaration=contains and { JsIdentifierBinding(), $name } until JsInitializerClause())
+      })
+    }, ...]),
+    // `var` is function-scoped: one declared in any nested block (or a
+    // `for (var ...)` head) of the enclosing function shadows the name too.
+    // The binding is checked before the regex, which needs the node's text.
+    JsFunctionBody(statements=contains and {
+      JsVariableDeclaration(declarators=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+      r"var\s[\s\S]*"
+    } until tanstack_query_no_void_query_fn_nested_scope()),
+    JsArrowFunctionExpression(parameters=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsFunctionExpression(parameters=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsFunctionDeclaration(parameters=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsMethodObjectMember(parameters=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsMethodClassMember(parameters=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsConstructorClassMember(parameters=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsSetterClassMember(parameter=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsSetterObjectMember(parameter=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsCatchClause(declaration=contains and { JsIdentifierBinding(), $name }),
+    JsForStatement(initializer=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsForOfStatement(initializer=contains and { JsIdentifierBinding(), $name }),
+    JsForInStatement(initializer=contains and { JsIdentifierBinding(), $name })
+  }
+}
+
+// A statement that declares `$name` in the scope of its block. (`$name`
+// matches any node with the same text, hence `and { JsIdentifierBinding(), $name }`.)
+pattern tanstack_query_no_void_query_fn_declares($name) {
+  or {
+    JsVariableStatement(declaration=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsFunctionDeclaration(id=$name),
+    JsClassDeclaration(id=$name)
+  }
+}
+
+// ----------------------------------------------------------------------------
+// @tanstack/query/stable-query-client
+// ----------------------------------------------------------------------------
+
+// Entry point. Anchors on the `new QueryClient(...)` expression, which is also this rule's span:
+//
+//   function App() {
+//     const queryClient = new QueryClient()
+//                         ^^^^^^^^^^^^^^^^^
+//
+// Anchoring on the rare `new QueryClient` node (instead of on every variable declarator) keeps the
+// rule cheap: the checks below only run for those few nodes, cheapest first. Every check walks up
+// the tree (`within`) except the import lookup, which scans the module's top-level statements.
+pattern tanstack_query_stable_query_client() {
+  // `new QueryClient(...)` or `new QueryClient` (without an argument list). Like upstream, the callee
+  // must be the bare identifier `QueryClient`: `new RQ.QueryClient()` and `new MyClient()` (an alias)
+  // are not reported.
+  JsNewExpression(callee = `QueryClient`) as $client where {
+    // Upstream requires the `new` expression to BE the initializer of a variable declarator (ESTree
+    // has no parenthesized-expression node, so `= (new QueryClient())` counts too). Anything wrapped
+    // around it (`useState(() => new QueryClient())`, `new QueryClient() as X`, `a ?? new
+    // QueryClient()`, `client = new QueryClient()`) is not reported. `$client` is already bound
+    // here, so `expression = $client` only accepts the declarator that directly holds this node.
+    $client <: within JsVariableDeclarator(initializer = JsInitializerClause(expression = or {
+      $client,
+      JsParenthesizedExpression(expression = $client)
+    })),
+
+    // The declaration must sit in a function whose name says it is a component or a hook ...
+    $client <: within tanstack_query_stable_query_client_component_or_hook(),
+
+    // ... and directly in it: when ANOTHER function sits between the component and the declaration
+    // (a lazy `useState(() => { const client = new QueryClient(); ... })` initializer, an effect, an
+    // event handler, a nested helper), the client is not created on every render, so the rule stays
+    // silent. (Upstream inspects the OUTERMOST function only and reports these.) The component is
+    // never nested itself, so any function-like ancestor that is nested is one of those in-between
+    // functions.
+    $client <: not within tanstack_query_stable_query_client_function_like() as $inner where {
+      $inner <: within tanstack_query_stable_query_client_function_boundary()
+    },
+
+    // Upstream only fires for the QueryClient of @tanstack/react-query (see detectTanstackQueryImports
+    // + isSpecificTanstackQueryImport): the module must import a value binding named `QueryClient`
+    // from exactly "@tanstack/react-query". Imports can only appear at the top level, so `some` over
+    // the module items is enough (no deep `contains`). The `some` is applied to the field directly
+    // instead of binding the item list to a variable: binding a node that large makes every match
+    // measurably slower in Biome 2.5.15.
+    $client <: within JsModule(items = some tanstack_query_stable_query_client_react_query_import()),
+
+    // No fix. Upstream rewrites the declarator to `[client] = React.useState(() => new QueryClient())`,
+    // which assumes `React` is in scope and can add a hook after an early return or inside an `if`
+    // (breaking the rules of hooks). Biome 2.5.15 also merges every rewrite of a plugin file into the
+    // FIRST diagnostic's fix, so an "unsafe" rewrite would be applied by plain `--write` in the presets
+    // and even on `biome-ignore`d lines. Report-only is the only honest option for now.
+    register_diagnostic(
+      span = $client,
+      message = "@tanstack/query/stable-query-client: QueryClient is not stable. It should be either extracted from the component or wrapped in React.useState. See https://tkdodo.eu/blog/react-query-fa-qs#2-the-queryclient-is-not-stable",
+      severity = "error"
+    )
+  }
+}
+
+// A non-async, non-nested function declaration or named function expression whose name starts like a
+// component (`App`) or a hook (`use`, `useClient`). Mirrors upstream
+// `isValidReactComponentOrHookName(fnAncestor.id)` + the async server-component exemption:
+//   - arrow functions, anonymous functions, `export default function () {}`, and class / object
+//     methods have no `id` upstream and are never treated as components;
+//   - `async function Page() {}` is a React Server Component, which runs once per request, so a new
+//     client there is fine.
+// Upstream's regex is /^(use|[A-Z])/, which also accepts `user()` or `useless()`; this port requires
+// the React hook naming convention instead (`use` alone, or `use` followed by an upper-case letter or
+// a digit).
+pattern tanstack_query_stable_query_client_component_or_hook() {
+  or {
+    JsFunctionDeclaration(id = $name),
+    JsFunctionExpression(id = $name),
+    JsFunctionExportDefaultDeclaration(id = $name)
+  } as $function where {
+    $name <: r"(?:use(?:[A-Z0-9].*)?|[A-Z].*)",
+    // The node text starts with `async` exactly when the function is async (the `export default`
+    // keywords belong to the parent node).
+    $function <: not r"async\b[\s\S]*",
+    // Upstream uses the outermost function ancestor: a component declared inside another function,
+    // an arrow or a method is not considered.
+    $function <: not within tanstack_query_stable_query_client_function_boundary(),
+    // `QueryClient` must still be the imported class: a parameter, variable, function or class named
+    // `QueryClient` inside the component shadows it (upstream reports these, as it has no scope check).
+    $function <: not tanstack_query_stable_query_client_rebinds_query_client()
+  }
+}
+
+// A function that declares its own binding named `QueryClient` anywhere inside it (parameters, local
+// declarations, nested scopes; `{ QueryClient: Renamed }` binds `Renamed` and does not count). Any such
+// binding silences the rule for the whole component, a deliberate over-approximation (no scope
+// analysis): a false negative instead of a false positive.
+//
+// The `contains` walks the whole function, so it is guarded by a text check first: a shadowing binding
+// needs at least a second whole-word `QueryClient` besides the `new QueryClient` itself. Components that
+// mention `QueryClient` once (almost all of them) skip the walk; `useQueryClient` does not count.
+pattern tanstack_query_stable_query_client_rebinds_query_client() {
+  and {
+    r"[\s\S]*\bQueryClient\b[\s\S]*\bQueryClient\b[\s\S]*",
+    contains `QueryClient` as $binding where { $binding <: JsIdentifierBinding() }
+  }
+}
+
+// Any node that starts a new function scope.
+pattern tanstack_query_stable_query_client_function_like() {
+  or {
+    JsFunctionDeclaration(),
+    JsFunctionExpression(),
+    JsFunctionExportDefaultDeclaration(),
+    JsArrowFunctionExpression(),
+    JsMethodClassMember(),
+    JsMethodObjectMember(),
+    JsGetterClassMember(),
+    JsGetterObjectMember(),
+    JsSetterClassMember(),
+    JsSetterObjectMember(),
+    JsConstructorClassMember()
+  }
+}
+
+// The parts of a function that make whatever they contain "nested in a function": every function-like
+// node keeps its statements in a JsFunctionBody, an arrow may have an expression body, and default
+// values live in the parameter lists.
+pattern tanstack_query_stable_query_client_function_boundary() {
+  or {
+    JsFunctionBody(),
+    JsArrowFunctionExpression(),
+    JsParameters(),
+    JsConstructorParameters(),
+    JsSetterClassMember(),
+    JsSetterObjectMember()
+  }
+}
+
+// `import { QueryClient } from "@tanstack/react-query"` (also with other specifiers, a default import
+// in front, or a renamed import whose LOCAL name is `QueryClient`, exactly like upstream). Type-only
+// imports (`import type { QueryClient }`, `import { type QueryClient }`) do not bind a value.
+pattern tanstack_query_stable_query_client_react_query_import() {
+  JsImport(import_clause = or {
+    JsImportNamedClause(named_specifiers = $specifiers, source = $source),
+    JsImportCombinedClause(specifier = $specifiers, source = $source)
+  }) as $import where {
+    $source <: r"['\"]@tanstack/react-query['\"]",
+    $import <: not r"import\s+type\b[\s\S]*",
+    $specifiers <: contains or {
+      JsShorthandNamedImportSpecifier(local_name = $local),
+      JsNamedImportSpecifier(local_name = $local)
+    } as $specifier where {
+      $local <: `QueryClient`,
+      $specifier <: not r"type\b[\s\S]*"
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Entry point. Rules are grouped by the node kind they anchor on, so most nodes
+// are rejected by a cheap kind check. `any` (unlike `or`) evaluates every
+// rule of a group, so a node that violates several rules reports all of them.
+// ----------------------------------------------------------------------------
+
+any {
+  and { JsObjectExpression(), tanstack_query_exhaustive_deps() },
+  and {
+    JsCallExpression(),
+    any {
+      tanstack_query_infinite_query_property_order(),
+      tanstack_query_mutation_property_order(),
+      tanstack_query_no_unstable_deps()
+    }
+  },
+  and { or { JsObjectBindingPatternRest(), JsSpread() }, tanstack_query_no_rest_destructuring() },
+  and { or { JsPropertyObjectMember(), JsMethodObjectMember(), JsShorthandPropertyObjectMember() }, tanstack_query_no_void_query_fn() },
+  and { JsNewExpression(), tanstack_query_stable_query_client() }
+}

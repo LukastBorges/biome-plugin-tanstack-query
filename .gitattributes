@@ -1,0 +1,22 @@
+# Normalise every text file to LF in the repository and the working tree, on
+# every OS. Fixture outputs are compared byte-for-byte with Biome's rewrites,
+# and Biome preserves the line endings it reads, so CRLF checkouts on Windows
+# would break the suite.
+* text=auto eol=lf
+
+# GritQL is not a Linguist language (yet); .grit files are plain text.
+*.grit text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+
+# Test fixtures are deliberately "bad" code; keep them out of language stats.
+tests/fixtures/** linguist-vendored
+# Generated presets (scripts/build-index.js): collapse them in PR diffs.
+rules/index.grit linguist-generated
+rules/recommended-strict.grit linguist-generated
+package-lock.json linguist-generated
+CHANGELOG.md linguist-generated

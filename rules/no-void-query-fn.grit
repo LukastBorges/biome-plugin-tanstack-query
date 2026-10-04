@@ -1,0 +1,571 @@
+// @tanstack/query/no-void-query-fn
+// Upstream: https://tanstack.com/query/latest/docs/eslint/no-void-query-fn
+// Flags a `queryFn` (inline function, method shorthand, or identifier naming a
+// top-level function/const/declare/overload of the same file) whose return
+// type is provably void/undefined. Upstream asks the TypeScript checker;
+// GritQL has no types, so this is a structural approximation: type
+// annotations, `undefined`/`void` expressions, bare `return`s and a
+// conservative "can the end of the body be reached?" analysis. Whenever it is
+// unsure it stays silent.
+language js
+
+// Performance notes (measured with Biome 2.5.15):
+// - The entry point runs on every node. Variables bound there, and calls to
+//   parameterized patterns, are paid for on every node (much more so inside
+//   the composed presets), so the entry point binds nothing and only does
+//   cheap kind checks before delegating.
+// - Sub-patterns are nested directly in field positions
+//   (`JsBlockStatement(statements=<pattern>)`) instead of being bound to
+//   `$variables` and tested in `where` clauses.
+// - Whole-file `contains` scans are slow, so lookups walk only the module's
+//   top-level items, and regexes (which need the node's text) come last.
+// - The identifier lookup spells `id=$name` inline instead of calling a
+//   pattern with a `name` parameter: that cut lint time from 0.93 s to
+//   0.62 s on a 3,600-line component file, and from 54 s to 15 s on a
+//   (pathological) file with 1,500 top-level declarations.
+
+// ---------------------------------------------------------------------------
+// Entry point. It runs on every node, so it binds no variables and only does
+// cheap kind checks before delegating (variables bound here would be paid for
+// on every node of every file, especially inside the composed presets).
+// ---------------------------------------------------------------------------
+pattern tanstack_query_no_void_query_fn() {
+  or {
+    // `queryFn: <function>` or `queryFn: <identifier>`. `name="queryFn"` only
+    // matches an identifier key: `'queryFn': ...` is ignored, like upstream
+    // (a computed `[queryFn]: ...` is ignored too; upstream checks it).
+    and {
+      JsPropertyObjectMember(name="queryFn"),
+      tanstack_query_no_void_query_fn_property()
+    },
+    // `queryFn() {...}`
+    and {
+      JsMethodObjectMember(name="queryFn"),
+      tanstack_query_no_void_query_fn_method()
+    },
+    // `{ queryFn }` naming a void top-level function.
+    and {
+      JsShorthandPropertyObjectMember(name="queryFn"),
+      tanstack_query_no_void_query_fn_shorthand()
+    }
+  }
+}
+
+// Every diagnostic is reported on the queryFn *value* (span ownership: other
+// rules own the hook call, the options object and the property keys). Cheap
+// local checks come first; the "is this TanStack Query?" check runs last.
+
+pattern tanstack_query_no_void_query_fn_property() {
+  JsPropertyObjectMember(value=$value) where {
+    $value <: or {
+      tanstack_query_no_void_query_fn_void_function(),
+      JsIdentifierExpression(name=tanstack_query_no_void_query_fn_void_reference())
+    },
+    $value <: tanstack_query_no_void_query_fn_in_query_options(),
+    register_diagnostic(
+      span=$value,
+      message="@tanstack/query/no-void-query-fn: queryFn must return a non-undefined value",
+      severity="error"
+    )
+  }
+}
+
+// ESLint reports the method's FunctionExpression, which has no Biome
+// counterpart, so we report on the method body.
+pattern tanstack_query_no_void_query_fn_method() {
+  JsMethodObjectMember(body=$body) as $method where {
+    $method <: tanstack_query_no_void_query_fn_void_function(),
+    $body <: tanstack_query_no_void_query_fn_in_query_options(),
+    register_diagnostic(
+      span=$body,
+      message="@tanstack/query/no-void-query-fn: queryFn must return a non-undefined value",
+      severity="error"
+    )
+  }
+}
+
+// `{ queryKey, queryFn }` where `queryFn` names a void top-level function.
+pattern tanstack_query_no_void_query_fn_shorthand() {
+  JsShorthandPropertyObjectMember(name=tanstack_query_no_void_query_fn_void_reference()) as $member where {
+    $member <: tanstack_query_no_void_query_fn_in_query_options(),
+    register_diagnostic(
+      span=$member,
+      message="@tanstack/query/no-void-query-fn: queryFn must return a non-undefined value",
+      severity="error"
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// `queryFn: fetchTodos` / `{ queryFn }`: resolve the identifier to a value
+// declared at the top level of the same file (optionally `export`ed):
+// `function name() {}`, `declare function name(): T`, overload signatures, or
+// `const name = <arrow | function>`. The lookup only walks the module's
+// top-level items, so it costs O(top-level items) per identifier. There is no
+// scope analysis in GritQL, so a reference is skipped whenever a scope
+// enclosing it re-declares the name.
+// ---------------------------------------------------------------------------
+pattern tanstack_query_no_void_query_fn_void_reference() {
+  and {
+    JsReferenceIdentifier() as $name where {
+      // 1. Find the FIRST top-level declaration of the name. `[..., p, ...]`
+      //    matches the leftmost item and never backtracks, so for an overloaded
+      //    function `$declaration` is its first signature, which is the one
+      //    whose return type the type checker (and upstream) uses. The lookup is
+      //    spelled inline instead of calling a pattern with a `name` parameter:
+      //    parameterized calls cost far more in Biome 2.5's engine.
+      $program <: JsModule(items=[..., or {
+        JsFunctionDeclaration(id=$name),
+        TsDeclareFunctionDeclaration(id=$name),
+        JsVariableStatement(declaration=JsVariableDeclaration(declarators=[..., JsVariableDeclarator(id=$name), ...])),
+        TsDeclareStatement(declaration=or {
+          TsDeclareFunctionDeclaration(id=$name),
+          JsVariableDeclarationClause(declaration=JsVariableDeclaration(declarators=[..., JsVariableDeclarator(id=$name), ...]))
+        }),
+        JsExport(export_clause=or {
+          JsFunctionDeclaration(id=$name),
+          TsDeclareFunctionDeclaration(id=$name),
+          JsVariableDeclarationClause(declaration=JsVariableDeclaration(declarators=[..., JsVariableDeclarator(id=$name), ...])),
+          TsExportDeclareClause(declaration=or {
+            TsDeclareFunctionDeclaration(id=$name),
+            JsVariableDeclarationClause(declaration=JsVariableDeclaration(declarators=[..., JsVariableDeclarator(id=$name), ...]))
+          })
+        })
+      } as $declaration, ...]),
+      // 2. That declaration is a void function. (`declare ...` is
+      //    TsDeclareStatement; `export declare ...` is TsExportDeclareClause.)
+      $declaration <: or {
+        tanstack_query_no_void_query_fn_void_declaration(),
+        JsVariableStatement(declaration=tanstack_query_no_void_query_fn_void_const()),
+        TsDeclareStatement(declaration=tanstack_query_no_void_query_fn_void_declaration()),
+        JsExport(export_clause=or {
+          tanstack_query_no_void_query_fn_void_declaration(),
+          TsExportDeclareClause(declaration=tanstack_query_no_void_query_fn_void_declaration())
+        })
+      }
+    },
+    // 3. No scope between the reference and the module re-declares the name.
+    //    This is a separate pattern on the same node, with its own variable:
+    //    matching `$name` against the declaration's identifier in step 1 can
+    //    rebind it to that identifier, whose ancestors are not the reference's.
+    //    It runs last because most references do not resolve to a void function.
+    JsReferenceIdentifier() as $reference where {
+      not $reference <: within tanstack_query_no_void_query_fn_shadowing_scope(name=$reference)
+    }
+  }
+}
+
+// A top-level declaration (without its `export` / `declare` wrapper) of a
+// void function. (`const` statements are matched by the caller.)
+// (`and` evaluates in order: the regex, which needs the node's text, only runs
+// once the cheap structural checks have passed.)
+pattern tanstack_query_no_void_query_fn_void_declaration() {
+  or {
+    // `function load() {...}`. When the function is overloaded, the lookup
+    // stops at the first signature (below) and never reaches this body.
+    and {
+      JsFunctionDeclaration(),
+      tanstack_query_no_void_query_fn_void_function()
+    },
+    // Overload signature `function load(): Promise<void>` or ambient
+    // `declare function load(): Promise<void>`: only the annotation counts (a
+    // missing one is implicitly `any`).
+    TsDeclareFunctionDeclaration(return_type_annotation=TsReturnTypeAnnotation(ty=tanstack_query_no_void_query_fn_void_type())),
+    // `const load = <function>` with a single declarator (`let`/`var`
+    // bindings can be reassigned). A type annotation on the variable is its
+    // type, so it decides on its own: `const load: QueryFunction<Todo[]> =
+    // async () => {...}` is never reported, whatever the function's body is.
+    JsVariableDeclarationClause(declaration=tanstack_query_no_void_query_fn_void_const())
+  }
+}
+
+pattern tanstack_query_no_void_query_fn_void_const() {
+  and {
+    JsVariableDeclaration(declarators=[or {
+      JsVariableDeclarator(variable_annotation=TsTypeAnnotation(ty=tanstack_query_no_void_query_fn_void_function_type())),
+      JsVariableDeclarator(variable_annotation=., initializer=JsInitializerClause(expression=or {
+        JsArrowFunctionExpression(),
+        JsFunctionExpression()
+      }))
+    }]),
+    r"const\s[\s\S]*",
+    JsVariableDeclaration(declarators=[or {
+      JsVariableDeclarator(variable_annotation=TsTypeAnnotation()),
+      JsVariableDeclarator(initializer=JsInitializerClause(expression=tanstack_query_no_void_query_fn_void_function()))
+    }])
+  }
+}
+
+// A function type whose return type is void: `() => Promise<void>`,
+// `QueryFunction<void>` (TanStack's `QueryFunction<T>` returns `T | Promise<T>`).
+pattern tanstack_query_no_void_query_fn_void_function_type() {
+  or {
+    TsFunctionType(return_type=tanstack_query_no_void_query_fn_void_type()),
+    TsParenthesizedType(ty=tanstack_query_no_void_query_fn_void_function_type()),
+    TsReferenceType(
+      name="QueryFunction",
+      type_arguments=TsTypeArguments(ts_type_argument_list=[tanstack_query_no_void_query_fn_void_type(), ...])
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Is this `queryFn` a TanStack Query one? Yes when the object literal that
+// directly contains it also has a `queryKey` member (`{ queryKey, queryFn }`
+// is TanStack Query's signature, so this also covers files that import the
+// hooks through a project wrapper), or when the file imports from a TanStack
+// Query package (`@tanstack/react-query`, `@tanstack/vue-query`,
+// `@tanstack/query-core`, ...; `import type` counts too). Other libraries'
+// `queryFn` keys (RTK Query endpoints, ...) have no `queryKey` sibling.
+// ---------------------------------------------------------------------------
+pattern tanstack_query_no_void_query_fn_in_query_options() {
+  or {
+    // `until` stops at the nearest enclosing object literal, so a `queryKey`
+    // of an outer object (`{ queryKey, meta: { queryFn } }`) does not count.
+    within JsObjectExpression(members=[..., or {
+      JsPropertyObjectMember(name="queryKey"),
+      JsShorthandPropertyObjectMember(name="queryKey")
+    }, ...]) until JsObjectExpression(),
+    // `[..., p, ...]` means "some element matches p"; it walks only the
+    // module's top-level items, since imports cannot be nested. The regex
+    // needs the node's text, so it comes after the structural check. (Reached
+    // with `within` rather than `$program <:` from a predicate with a
+    // parameter, which costs about 25 ms per diagnostic on a 3,600-line file.)
+    within JsModule(items=[..., JsImport(import_clause=contains and {
+      JsModuleSource(),
+      r"[\"']@tanstack/[a-z0-9-]*query[a-z0-9-]*[\"']"
+    }), ...])
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A function node (arrow, function expression, function declaration or object
+// method) whose awaited return type is certainly void/undefined, or a union
+// containing one of them.
+// ---------------------------------------------------------------------------
+pattern tanstack_query_no_void_query_fn_void_function() {
+  or {
+    // 1. An explicit return type annotation decides on its own, exactly like
+    //    the type checker would: `(): Promise<void> => ...` is reported,
+    //    `(): Promise<Todo[]> => {...}` never is, whatever its body says.
+    JsArrowFunctionExpression(return_type_annotation=TsReturnTypeAnnotation(ty=tanstack_query_no_void_query_fn_void_type())),
+    JsFunctionExpression(return_type_annotation=TsReturnTypeAnnotation(ty=tanstack_query_no_void_query_fn_void_type())),
+    JsFunctionDeclaration(return_type_annotation=TsReturnTypeAnnotation(ty=tanstack_query_no_void_query_fn_void_type())),
+    JsMethodObjectMember(return_type_annotation=TsReturnTypeAnnotation(ty=tanstack_query_no_void_query_fn_void_type())),
+
+    // 2. Concise arrow body: `() => undefined`, `async () => void save()`,
+    //    `() => cond ? data : undefined`, `() => Promise.resolve()`, ...
+    JsArrowFunctionExpression(return_type_annotation=., body=tanstack_query_no_void_query_fn_undefined_expression()),
+
+    // 3. Block body of a function *expression*. (Arrows cannot be generators;
+    //    the regex rules out `function*` / `*method()`, which return a
+    //    Generator object.)
+    JsArrowFunctionExpression(return_type_annotation=., body=tanstack_query_no_void_query_fn_void_expression_body()),
+    and {
+      or {
+        JsFunctionExpression(return_type_annotation=., body=tanstack_query_no_void_query_fn_void_expression_body()),
+        JsMethodObjectMember(return_type_annotation=., body=tanstack_query_no_void_query_fn_void_expression_body())
+      },
+      not r"(?:async\s+)?(?:function\s*)?\*[\s\S]*"
+    },
+
+    // 4. Block body of a function *declaration* (reached through a reference).
+    //    A declaration that returns nothing is inferred as `void` even when it
+    //    always throws, so reachability does not matter here.
+    and {
+      JsFunctionDeclaration(return_type_annotation=., body=or {
+        tanstack_query_no_void_query_fn_void_body(),
+        tanstack_query_no_void_query_fn_returns_nothing()
+      }),
+      not r"(?:async\s+)?function\s*\*[\s\S]*"
+    }
+  }
+}
+
+// A type annotation that resolves (after awaiting) to void, undefined, or a
+// union containing one of them: `void`, `undefined`, `Promise<void>`,
+// `Promise<Todo | undefined>`, `PromiseLike<void>`, `Todo | undefined`, `(void)`.
+pattern tanstack_query_no_void_query_fn_void_type() {
+  or {
+    TsVoidType(),
+    TsUndefinedType(),
+    TsParenthesizedType(ty=tanstack_query_no_void_query_fn_void_type()),
+    TsUnionType(types=[..., tanstack_query_no_void_query_fn_void_type(), ...]),
+    TsReferenceType(
+      name=or { "Promise", "PromiseLike" },
+      type_arguments=TsTypeArguments(ts_type_argument_list=[tanstack_query_no_void_query_fn_void_type()])
+    )
+  }
+}
+
+// An expression whose value is certainly `undefined` (or a union with it).
+pattern tanstack_query_no_void_query_fn_undefined_expression() {
+  or {
+    `undefined`,
+    `void $_`,
+    JsParenthesizedExpression(expression=tanstack_query_no_void_query_fn_undefined_expression()),
+    // Either branch being undefined puts `undefined` in the union.
+    JsConditionalExpression(consequent=tanstack_query_no_void_query_fn_undefined_expression()),
+    JsConditionalExpression(alternate=tanstack_query_no_void_query_fn_undefined_expression()),
+    JsAwaitExpression(argument=tanstack_query_no_void_query_fn_undefined_expression()),
+    `Promise.resolve()`,
+    JsCallExpression(
+      callee=`Promise.resolve`,
+      arguments=JsCallArguments(args=[tanstack_query_no_void_query_fn_undefined_expression()])
+    ),
+    `new Promise<void>($_)`,
+    `new Promise<undefined>($_)`,
+    // Every `console.*` method is typed `void`.
+    JsCallExpression(callee=`console.$_`),
+    // `fetch(url).then((res) => { res.json() })`: the callback returns void,
+    // so the promise resolves to void.
+    JsCallExpression(
+      callee=JsStaticMemberExpression(member="then"),
+      arguments=JsCallArguments(args=[tanstack_query_no_void_query_fn_void_function(), ...])
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Block bodies.
+// ---------------------------------------------------------------------------
+
+// Nested functions and classes have their own `return`s: never look inside.
+pattern tanstack_query_no_void_query_fn_nested_scope() {
+  or {
+    JsArrowFunctionExpression(),
+    JsFunctionExpression(),
+    JsFunctionDeclaration(),
+    JsMethodObjectMember(),
+    JsGetterObjectMember(),
+    JsSetterObjectMember(),
+    JsClassDeclaration(),
+    JsClassExpression()
+  }
+}
+
+// A body without any `return <value>` of its own.
+pattern tanstack_query_no_void_query_fn_returns_nothing() {
+  JsFunctionBody(statements=not contains JsReturnStatement(argument=not .) until tanstack_query_no_void_query_fn_nested_scope())
+}
+
+// Body of a function *expression* whose return type includes `undefined`.
+pattern tanstack_query_no_void_query_fn_void_expression_body() {
+  or {
+    tanstack_query_no_void_query_fn_void_body(),
+    // Nothing is ever returned: `void`, provided the end of the body is
+    // reachable (a function expression that can only throw is `never`).
+    // Calls are trusted to return here: a queryFn whose last statement is a
+    // `never`-returning helper and that returns nothing is not realistic.
+    and {
+      JsFunctionBody(statements=tanstack_query_no_void_query_fn_list_falls_through()),
+      tanstack_query_no_void_query_fn_returns_nothing()
+    }
+  }
+}
+
+// A body whose return type includes `undefined`, whether or not it also
+// returns values on other paths.
+pattern tanstack_query_no_void_query_fn_void_body() {
+  or {
+    // The end of the body is reachable (missing `else`, `catch` without a
+    // return, ...). This uses the *strict* reachability check: when values
+    // are returned elsewhere, a trailing `handleError(e)` may well be a
+    // `never`-returning helper, so unknown calls do not count as completing.
+    JsFunctionBody(statements=tanstack_query_no_void_query_fn_list_falls_through_strict()),
+    // `return;`, `return undefined`, `return cond ? x : undefined`, ...
+    JsFunctionBody(statements=contains JsReturnStatement(argument=or {
+      .,
+      tanstack_query_no_void_query_fn_undefined_expression()
+    }) until tanstack_query_no_void_query_fn_nested_scope())
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reachability. `list_falls_through` matches a statement list whose end is
+// certainly reachable: EVERY statement in it can complete normally, so an
+// early `return`/`throw` makes the rest of the list unreachable, and hoisted
+// declarations after a `return` (`return parse(x); function parse() {...}`)
+// do not count as reaching the end.
+//
+// There are two copies of this small analysis: the loose one trusts every
+// expression statement to complete, the strict one also requires the LAST
+// statement not to be a call (other than `console.*`), since a trailing
+// `handleError(e)` may be a `never`-returning helper. They are duplicated
+// rather than parameterized because passing a parameter through a recursive
+// pattern makes Biome 2.5's GritQL engine blow up exponentially.
+//
+// Anything not listed (return, throw, break, continue, labeled blocks,
+// `while (true)`, `do ... while (true)`, ...) is treated as "may not
+// complete", which can only cause false negatives.
+// ---------------------------------------------------------------------------
+pattern tanstack_query_no_void_query_fn_list_falls_through() {
+  // "No statement fails to complete" (also true of an empty list).
+  not [..., not tanstack_query_no_void_query_fn_falls_through(), ...]
+}
+
+pattern tanstack_query_no_void_query_fn_falls_through() {
+  or {
+    // Calls to well-known `never`-returning functions end the body.
+    JsExpressionStatement(expression=not JsCallExpression(callee=or {
+      `process.exit`,
+      `notFound`,
+      `redirect`,
+      `permanentRedirect`,
+      `forbidden`,
+      `unauthorized`
+    })),
+    tanstack_query_no_void_query_fn_simple_statement(),
+    JsIfStatement(consequent=tanstack_query_no_void_query_fn_falls_through()),
+    JsIfStatement(else_clause=JsElseClause(alternate=tanstack_query_no_void_query_fn_falls_through())),
+    JsBlockStatement(statements=tanstack_query_no_void_query_fn_list_falls_through()),
+    // `do {...} while (c)` ends normally when its body does.
+    JsDoWhileStatement(test=not `true`, body=tanstack_query_no_void_query_fn_falls_through()),
+    // try/catch: falls through if either the try block or the catch block does.
+    JsTryStatement(body=tanstack_query_no_void_query_fn_falls_through()),
+    JsTryStatement(catch_clause=JsCatchClause(body=tanstack_query_no_void_query_fn_falls_through())),
+    // try/(catch/)finally: the finally block must fall through as well.
+    JsTryFinallyStatement(
+      finally_clause=JsFinallyClause(body=tanstack_query_no_void_query_fn_falls_through()),
+      body=tanstack_query_no_void_query_fn_falls_through()
+    ),
+    JsTryFinallyStatement(
+      finally_clause=JsFinallyClause(body=tanstack_query_no_void_query_fn_falls_through()),
+      catch_clause=JsCatchClause(body=tanstack_query_no_void_query_fn_falls_through())
+    ),
+    // switch: the last clause falls out of the statement.
+    JsSwitchStatement(cases=[..., or {
+      JsCaseClause(consequent=tanstack_query_no_void_query_fn_list_falls_through()),
+      JsDefaultClause(consequent=tanstack_query_no_void_query_fn_list_falls_through())
+    }])
+  }
+}
+
+pattern tanstack_query_no_void_query_fn_list_falls_through_strict() {
+  or {
+    [],
+    and {
+      not [..., not tanstack_query_no_void_query_fn_falls_through(), ...],
+      [..., tanstack_query_no_void_query_fn_falls_through_strict()]
+    }
+  }
+}
+
+pattern tanstack_query_no_void_query_fn_falls_through_strict() {
+  or {
+    // Only expressions that cannot be a call to a `never`-returning helper.
+    JsExpressionStatement(expression=or { not JsCallExpression(), JsCallExpression(callee=`console.$_`) }),
+    tanstack_query_no_void_query_fn_simple_statement(),
+    JsIfStatement(consequent=tanstack_query_no_void_query_fn_falls_through_strict()),
+    JsIfStatement(else_clause=JsElseClause(alternate=tanstack_query_no_void_query_fn_falls_through_strict())),
+    JsBlockStatement(statements=tanstack_query_no_void_query_fn_list_falls_through_strict()),
+    JsDoWhileStatement(test=not `true`, body=tanstack_query_no_void_query_fn_falls_through_strict()),
+    JsTryStatement(body=tanstack_query_no_void_query_fn_falls_through_strict()),
+    JsTryStatement(catch_clause=JsCatchClause(body=tanstack_query_no_void_query_fn_falls_through_strict())),
+    JsTryFinallyStatement(
+      finally_clause=JsFinallyClause(body=tanstack_query_no_void_query_fn_falls_through_strict()),
+      body=tanstack_query_no_void_query_fn_falls_through_strict()
+    ),
+    JsTryFinallyStatement(
+      finally_clause=JsFinallyClause(body=tanstack_query_no_void_query_fn_falls_through_strict()),
+      catch_clause=JsCatchClause(body=tanstack_query_no_void_query_fn_falls_through_strict())
+    ),
+    JsSwitchStatement(cases=[..., or {
+      JsCaseClause(consequent=tanstack_query_no_void_query_fn_list_falls_through_strict()),
+      JsDefaultClause(consequent=tanstack_query_no_void_query_fn_list_falls_through_strict())
+    }])
+  }
+}
+
+// Statements that complete in both analyses.
+pattern tanstack_query_no_void_query_fn_simple_statement() {
+  or {
+    JsVariableStatement(),
+    JsEmptyStatement(),
+    JsDebuggerStatement(),
+    JsFunctionDeclaration(),
+    JsClassDeclaration(),
+    TsTypeAliasDeclaration(),
+    TsInterfaceDeclaration(),
+    // `if (c) {...}` without `else`: the implicit else path falls through.
+    JsIfStatement(test=not `true`, else_clause=.),
+    // Iterating loops end normally (a `return` inside only exits early).
+    JsForOfStatement(),
+    JsForInStatement(),
+    JsWhileStatement(test=not `true`),
+    JsForStatement(test=and { not ., not `true` }),
+    // The same loops with a label (`outer: for (...) {...}`).
+    JsLabeledStatement(body=or {
+      JsForOfStatement(),
+      JsForInStatement(),
+      JsWhileStatement(test=not `true`),
+      JsForStatement(test=and { not ., not `true` })
+    }),
+    // A switch without `default`, or one that some clause `break`s out of.
+    JsSwitchStatement(cases=not [..., JsDefaultClause(), ...]),
+    JsSwitchStatement(cases=contains JsBreakStatement(label=.) until or {
+      tanstack_query_no_void_query_fn_nested_scope(),
+      JsSwitchStatement(),
+      JsForStatement(),
+      JsForOfStatement(),
+      JsForInStatement(),
+      JsWhileStatement(),
+      JsDoWhileStatement()
+    })
+  }
+}
+
+// An ancestor of the reference that binds `$name` for it. Only the binding
+// positions of each ancestor are inspected (`until JsInitializerClause()`
+// skips initializers and default values), so the cost stays proportional to
+// the number of statements of the enclosing blocks, not to their size.
+pattern tanstack_query_no_void_query_fn_shadowing_scope($name) {
+  or {
+    JsFunctionBody(statements=[..., tanstack_query_no_void_query_fn_declares(name=$name), ...]),
+    JsBlockStatement(statements=[..., tanstack_query_no_void_query_fn_declares(name=$name), ...]),
+    JsCaseClause(consequent=[..., tanstack_query_no_void_query_fn_declares(name=$name), ...]),
+    JsDefaultClause(consequent=[..., tanstack_query_no_void_query_fn_declares(name=$name), ...]),
+    JsStaticInitializationBlockClassMember(statements=[..., tanstack_query_no_void_query_fn_declares(name=$name), ...]),
+    // `namespace NS { function load() {...} }` (exported or not).
+    TsModuleBlock(items=[..., or {
+      tanstack_query_no_void_query_fn_declares(name=$name),
+      JsExport(export_clause=or {
+        tanstack_query_no_void_query_fn_declares(name=$name),
+        JsVariableDeclarationClause(declaration=contains and { JsIdentifierBinding(), $name } until JsInitializerClause())
+      })
+    }, ...]),
+    // `var` is function-scoped: one declared in any nested block (or a
+    // `for (var ...)` head) of the enclosing function shadows the name too.
+    // The binding is checked before the regex, which needs the node's text.
+    JsFunctionBody(statements=contains and {
+      JsVariableDeclaration(declarators=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+      r"var\s[\s\S]*"
+    } until tanstack_query_no_void_query_fn_nested_scope()),
+    JsArrowFunctionExpression(parameters=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsFunctionExpression(parameters=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsFunctionDeclaration(parameters=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsMethodObjectMember(parameters=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsMethodClassMember(parameters=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsConstructorClassMember(parameters=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsSetterClassMember(parameter=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsSetterObjectMember(parameter=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsCatchClause(declaration=contains and { JsIdentifierBinding(), $name }),
+    JsForStatement(initializer=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsForOfStatement(initializer=contains and { JsIdentifierBinding(), $name }),
+    JsForInStatement(initializer=contains and { JsIdentifierBinding(), $name })
+  }
+}
+
+// A statement that declares `$name` in the scope of its block. (`$name`
+// matches any node with the same text, hence `and { JsIdentifierBinding(), $name }`.)
+pattern tanstack_query_no_void_query_fn_declares($name) {
+  or {
+    JsVariableStatement(declaration=contains and { JsIdentifierBinding(), $name } until JsInitializerClause()),
+    JsFunctionDeclaration(id=$name),
+    JsClassDeclaration(id=$name)
+  }
+}
+
+// Entry point. The node-kind check in front lets Biome reject every other node
+// cheaply (see scripts/build-index.js); it must cover every node the rule reports on.
+and { or { JsPropertyObjectMember(), JsMethodObjectMember(), JsShorthandPropertyObjectMember() }, tanstack_query_no_void_query_fn() }

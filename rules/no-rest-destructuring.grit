@@ -1,0 +1,314 @@
+// @tanstack/query/no-rest-destructuring
+// Upstream: https://tanstack.com/query/latest/docs/eslint/no-rest-destructuring
+// Flags object rest destructuring of a TanStack Query hook result, either directly
+// (`const { data, ...rest } = useQuery(...)`, also inside `useQueries` result arrays) or
+// through a stored result (`const q = useQuery(...)`, then `{ ...q }` or `const { a, ...r } = q`).
+// Limitations vs ESLint: no type information, so custom hooks returning a query result are not
+// followed; stored results are only tracked inside the function that called the hook.
+language js
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+//
+// The rule matches the node it reports on (a rest element or a spread) and
+// then looks UP for the hook call it comes from, so every evaluation reports
+// at most one diagnostic, on its own node.
+//
+// Performance notes (measured with Biome 2.5.15):
+// * Rest elements and spreads are common in React code, so the cheap checks
+//   come first (node kind, nearest ancestors). The hook call is looked up in
+//   the statement lists of the enclosing function bodies with list patterns
+//   (`[..., X, ...]`), and the imports and shadowing are only checked for
+//   candidates that already look like a finding.
+// * Every evaluation step copies the values of ALL variables declared
+//   anywhere in the plugin, so the rule keeps its variable count low: the
+//   main logic is written inline here instead of in many small predicates.
+// * The pattern never MATCHES: see `tanstack_query_no_rest_destructuring_report`.
+
+pattern tanstack_query_no_rest_destructuring() {
+  or {
+    // `...rest` in an object binding pattern:
+    //   const { data, ...rest } = useQuery(...)                  (1)
+    //   const [a, { data, ...rest }] = useQueries(...)           (2)
+    //   const query = useQuery(...); const { a, ...r } = query   (3)
+    JsObjectBindingPatternRest() as $rest where {
+      // `within` binds the NEAREST matching ancestor: the object pattern that
+      // directly owns `...rest` ...
+      $rest <: within JsObjectBindingPattern() as $object_pattern,
+      // ... and the nearest node that owns a binding pattern, which must be a
+      // variable declarator. A rest element in a callback parameter, e.g.
+      // `useQuery({ select: ({ a, ...others }) => others })`, belongs to that
+      // parameter even though a declarator encloses it further up.
+      $rest <: within tanstack_query_no_rest_destructuring_binding_owner() as $declarator,
+      or {
+        // (1) `const { data, ...rest } = useQuery(...)`
+        //
+        // Matching against an already bound variable compares source text.
+        // The rest element sits in the declarator's own binding pattern (see
+        // the owner check above), so `id = $object_pattern` holds exactly
+        // when the rest element is in the TOP-LEVEL pattern: `const { data:
+        // { a, ...b } } = useQuery()` spreads `data`, not the query result,
+        // and is left alone (as upstream does).
+        and {
+          $declarator <: JsVariableDeclarator(
+            id = $object_pattern,
+            initializer = tanstack_query_no_rest_destructuring_hook_call($hook)
+          ),
+          $hook <: tanstack_query_no_rest_destructuring_single_result_hook(),
+          $call_site = $declarator
+        },
+        // (2) `const [first, { data, ...rest }] = useQueries(...)`
+        //
+        // Like upstream, only DIRECT elements of the array pattern count, and
+        // an element with a default value (`{ data, ...rest } = {}`) does not.
+        and {
+          $object_pattern <: within JsArrayBindingPatternElement() as $element,
+          // GritQL cannot address the element's `pattern` field (`pattern` is
+          // a keyword), so the two are compared by text instead: they are
+          // identical exactly when the object pattern IS the element, without
+          // a default value.
+          $element <: $object_pattern,
+          // The element must belong to the declarator's own array pattern,
+          // not to a nested one such as `[[{ ...rest }]]`.
+          $element <: within JsArrayBindingPattern() as $array_pattern,
+          $declarator <: JsVariableDeclarator(
+            id = $array_pattern,
+            initializer = tanstack_query_no_rest_destructuring_hook_call($hook)
+          ),
+          $hook <: tanstack_query_no_rest_destructuring_multiple_results_hook(),
+          $call_site = $declarator
+        },
+        // (3) `const query = useQuery(...); const { data, ...rest } = query`
+        and {
+          $declarator <: JsVariableDeclarator(
+            id = $object_pattern,
+            initializer = JsInitializerClause(expression = JsIdentifierExpression(name = $name))
+          ),
+          tanstack_query_no_rest_destructuring_stored_result($declarator, $name, $hook, $call_site)
+        }
+      },
+      tanstack_query_no_rest_destructuring_is_tanstack_query_hook($hook, $call_site),
+      tanstack_query_no_rest_destructuring_report($rest)
+    },
+    // (4) `...query` where `query` holds a query result:
+    //   const query = useQuery(...); return { ...query, data: query.data[0] }
+    JsSpread(argument = JsIdentifierExpression(name = $name)) as $spread where {
+      tanstack_query_no_rest_destructuring_stored_result($spread, $name, $hook, $call_site),
+      tanstack_query_no_rest_destructuring_is_tanstack_query_hook($hook, $call_site),
+      tanstack_query_no_rest_destructuring_report($spread)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Building blocks
+// ---------------------------------------------------------------------------
+
+// Hooks that return ONE query result object (mirrors upstream `queryHooks`).
+pattern tanstack_query_no_rest_destructuring_single_result_hook() {
+  or { `useQuery`, `useInfiniteQuery`, `useSuspenseQuery`, `useSuspenseInfiniteQuery` }
+}
+
+// Hooks that return an ARRAY of query results.
+pattern tanstack_query_no_rest_destructuring_multiple_results_hook() {
+  or { `useQueries`, `useSuspenseQueries` }
+}
+
+// The initializer `= <hook>(...)`, with the hook called directly by name.
+// Like upstream, `Namespace.useQuery(...)`, `await`, `!` or `as` around the
+// call do not count.
+pattern tanstack_query_no_rest_destructuring_hook_call($hook) {
+  JsInitializerClause(expression = JsCallExpression(callee = JsIdentifierExpression(name = $hook)))
+}
+
+// Nodes that own a binding pattern. Patterns nested in default values, such
+// as `const { a = (({ ...r }) => r)(x) } = y`, belong to the nearest one.
+pattern tanstack_query_no_rest_destructuring_binding_owner() {
+  or { JsVariableDeclarator(), JsFormalParameter(), JsRestParameter(), JsCatchDeclaration() }
+}
+
+// Every node that starts a new function scope.
+pattern tanstack_query_no_rest_destructuring_function() {
+  or {
+    JsFunctionDeclaration(),
+    JsFunctionExpression(),
+    JsArrowFunctionExpression(),
+    JsMethodObjectMember(),
+    JsMethodClassMember(),
+    JsGetterObjectMember(),
+    JsSetterObjectMember(),
+    JsGetterClassMember(),
+    JsSetterClassMember(),
+    JsConstructorClassMember(),
+    JsStaticInitializationBlockClassMember()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stored query results, used by (3) and (4)
+// ---------------------------------------------------------------------------
+//
+// Upstream remembers the NAME of every variable that received a query result
+// and reports later uses of that name anywhere in the file. Without scope
+// analysis we stay conservative. `$use` (the spread or the destructuring)
+// refers to a query result when:
+//
+// * an enclosing function body declares `const $name = useQuery(...)` (or
+//   another single-result hook; also `let`/`var`, a type annotation, or one
+//   declarator among several) as one of its own statements. Hooks must be
+//   called at the top level of a component or custom hook anyway (Rules of
+//   Hooks), so looking at direct statements is enough; and
+// * no function, block, loop, `switch` or `catch` clause between that body
+//   and `$use` binds `$name` again (parameter, local variable, loop
+//   variable, ...), as `$name` would then refer to another value there.
+//
+// `useQueries` results are deliberately NOT tracked: spreading the returned
+// array (`[...queries]`) reads no property of the query results, so upstream
+// reporting it is a false positive.
+
+predicate tanstack_query_no_rest_destructuring_stored_result($use, $name, $hook, $call_site) {
+  // `within` tries the enclosing function bodies from the nearest outwards.
+  // `[..., X, ...]` matches a list with at least one element matching X.
+  // `$name` is already bound, so `id = $name` compares source text: it holds
+  // for the plain binding `query`, never for a destructuring pattern.
+  $use <: within JsFunctionBody(
+    statements = [
+      ...,
+      JsVariableStatement(
+        declaration = JsVariableDeclaration(
+          declarators = [
+            ...,
+            JsVariableDeclarator(id = $name, initializer = tanstack_query_no_rest_destructuring_hook_call($hook)),
+            ...
+          ]
+        )
+      ) as $call_site,
+      ...
+    ]
+  ) as $function_body,
+  // A name is declared once per scope, so the first declaration found is the
+  // only candidate: checking the hook name afterwards loses nothing.
+  $hook <: tanstack_query_no_rest_destructuring_single_result_hook(),
+  // Both `$inner_scope` and `$function_body` enclose `$use`, so the scope
+  // lies strictly inside the body exactly when its text does not include the
+  // body's text. (`includes` is a cheap substring test; `within
+  // $function_body` would compare the text of every ancestor up to the whole
+  // file.)
+  $use <: not within or {
+    tanstack_query_no_rest_destructuring_function(),
+    JsBlockStatement(),
+    JsForStatement(),
+    JsForInStatement(),
+    JsForOfStatement(),
+    // `case` clauses share one scope without braces:
+    // `switch (x) { case 1: const query = other; return { ...query } }`
+    JsSwitchStatement(),
+    JsCatchClause()
+  } as $inner_scope where {
+    $inner_scope <: not includes $function_body,
+    $inner_scope <: contains JsIdentifierBinding() as $shadow where { $shadow <: $name }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Import awareness (mirrors utils/detect-react-query-imports.ts)
+// ---------------------------------------------------------------------------
+//
+// `$hook` (e.g. `useQuery`), called at `$call_site`, is TanStack Query's hook
+// when:
+//
+// * its name is a named value import from a `@tanstack/*-query` package:
+//     import { useQuery } from '@tanstack/react-query'
+//     import { useQuery } from '@tanstack/vue-query'
+//   Like upstream this compares names only, so `import { useQuery as useQ }`
+//   makes `useQ(...)` invisible to the rule; and
+// * (stricter than upstream) no function enclosing the call binds the same
+//   name, so a local `const useQuery = () => ({ ... })`, a parameter named
+//   `useQuery` or a nested `function useQuery()` hides the import.
+
+predicate tanstack_query_no_rest_destructuring_is_tanstack_query_hook($hook, $call_site) {
+  // Imports are top-level statements, so only the module's own items are
+  // inspected.
+  $program <: JsModule(
+    items = [
+      ...,
+      JsImport(
+        import_clause = and {
+          // `import type { ... }` is not a value import (`import { type
+          // useQuery }` is one, as upstream). The `type` keyword cannot be
+          // addressed as a field, so look at the clause text: `type` followed
+          // by whitespace, `{` or a comment. (`import type, { x }` imports a
+          // default binding NAMED `type` and stays a value import.) Regexes
+          // match the WHOLE node text.
+          not r"type(?:\s|\{|/)[\s\S]*",
+          or {
+            // import { useQuery } from '...'
+            JsImportNamedClause(
+              named_specifiers = tanstack_query_no_rest_destructuring_specifiers($hook),
+              source = tanstack_query_no_rest_destructuring_module()
+            ),
+            // import Default, { useQuery } from '...'
+            JsImportCombinedClause(
+              specifier = tanstack_query_no_rest_destructuring_specifiers($hook),
+              source = tanstack_query_no_rest_destructuring_module()
+            )
+          }
+        }
+      ),
+      ...
+    ]
+  ),
+  // Only reached for real findings, so a `contains` over the enclosing
+  // functions is affordable here.
+  $call_site <: not within tanstack_query_no_rest_destructuring_function() as $function where {
+    $function <: contains JsIdentifierBinding() as $local where { $local <: $hook }
+  }
+}
+
+// Like upstream: the module starts with `@tanstack/` and ends with `-query`
+// (react-query, vue-query, solid-query, svelte-query, ...). The node text
+// includes the quotes.
+pattern tanstack_query_no_rest_destructuring_module() {
+  r"['\"]@tanstack/[^'\"]*-query['\"]"
+}
+
+// `{ useQuery }` or `{ something as useQuery }`
+pattern tanstack_query_no_rest_destructuring_specifiers($local_name) {
+  JsNamedImportSpecifiers(
+    specifiers = [
+      ...,
+      or {
+        JsShorthandNamedImportSpecifier(local_name = $local_name),
+        JsNamedImportSpecifier(local_name = $local_name)
+      },
+      ...
+    ]
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic
+// ---------------------------------------------------------------------------
+//
+// `false` after `register_diagnostic` is deliberate. The diagnostic is kept
+// (Biome collects it as a side effect), but the pattern itself never matches.
+// In Biome 2.5 every successful match of a plugin whose entry point is a named
+// pattern makes the evaluation of every LATER node in the file slower (the
+// cost grows with the number of matches so far). Measured on a 3,000-line
+// file with 200 findings: 93 s with a plain match, under 3 s with this trick.
+// The test suite fails loudly if a Biome version stops keeping diagnostics
+// from failed matches.
+
+predicate tanstack_query_no_rest_destructuring_report($span) {
+  register_diagnostic(
+    span = $span,
+    message = "@tanstack/query/no-rest-destructuring: Object rest destructuring on a query will observe all changes to the query, leading to excessive re-renders.",
+    severity = "warn"
+  ),
+  false
+}
+
+// Entry point. The node-kind check in front lets Biome reject every other node
+// cheaply (see scripts/build-index.js); it must cover every node the rule reports on.
+and { or { JsObjectBindingPatternRest(), JsSpread() }, tanstack_query_no_rest_destructuring() }

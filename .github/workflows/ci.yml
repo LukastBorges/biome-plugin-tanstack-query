@@ -1,0 +1,175 @@
+# Lint, type-check, test (Node + OS matrix), Biome version compatibility and
+# tarball contents. Also called by release.yml (`workflow_call`) so a release
+# only ever happens from a commit that passed exactly these checks.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # `github.workflow` is the *caller's* name when this runs via workflow_call,
+  # which keeps this group distinct from release.yml's own group.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Only superseded PR runs are cancelled; every commit on main gets a full run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FORCE_COLOR: '1'
+
+jobs:
+  lint:
+    name: Lint & type-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Biome (repository config)
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Generated presets are up to date
+        run: npm run check:index
+
+  test:
+    name: Test (Node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    # Windows is not part of the maintainers' local setup; report it without
+    # blocking merges until it has proven stable.
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node 20 reached end-of-life in April 2026 and the dev toolchain
+        # (vitest 5, semantic-release 25, commitlint 21) requires >= 22.12.
+        # The published package itself ships only .grit files and runs on
+        # whatever Node.js your Biome install uses.
+        os: [ubuntu-latest]
+        node: [22, 24, 26]
+        experimental: [false]
+        include:
+          - os: macos-latest
+            node: 24
+            experimental: false
+          - os: windows-latest
+            node: 24
+            experimental: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+  biome-compat:
+    name: Biome ${{ matrix.biome }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # `minimum` is read from peerDependencies["@biomejs/biome"] so the
+        # declared range and the tested floor can never drift apart.
+        biome: [minimum, latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Biome ${{ matrix.biome }}
+        env:
+          TARGET: ${{ matrix.biome }}
+        run: |
+          case "$TARGET" in
+            minimum)
+              range=$(node -p "require('./package.json').peerDependencies['@biomejs/biome']")
+              if [[ ! "$range" =~ ^\>=[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+                echo "::error file=package.json::peerDependencies[\"@biomejs/biome\"] must be a plain '>=x.y.z' range, found '$range'"
+                exit 1
+              fi
+              version="${BASH_REMATCH[1]}"
+              ;;
+            latest)
+              version=$(npm view @biomejs/biome@latest version)
+              ;;
+          esac
+          # Replace the locked dev version in place (lockfile untouched): the
+          # harness resolves `@biomejs/biome` exactly like a consumer's install.
+          #
+          # Do NOT point the BIOME_BINARY variable at another install's
+          # bin/biome instead: Biome's own npm shim reads BIOME_BINARY as the
+          # path of the *native* executable, so the shim would re-spawn itself
+          # forever (a fork bomb that only ends with the job timeout).
+          npm install --no-save --ignore-scripts --no-audit --no-fund "@biomejs/biome@$version"
+          installed=$(npx --no-install biome --version)
+          echo "Testing against Biome $version ($installed)" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ "$installed" != "Version: $version" ]]; then
+            echo "::error::expected Biome $version, found '$installed'"
+            exit 1
+          fi
+
+      - name: Test
+        run: npm test
+
+  package:
+    name: Package contents
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          # `npm pack` needs no dependencies: nothing to install or cache.
+          package-manager-cache: false
+
+      - name: Check tarball contents
+        run: npm run pack:check -- --list
