@@ -242,16 +242,17 @@ published), publishes to npm, commits `chore(release): x.y.z [skip ci]`, tags
 
 One-time setup:
 
-1. **npm Trusted Publishing.** npm can only attach a trusted publisher to an
-   existing package, so bootstrap the first release with a short-lived
-   [granular access token](https://docs.npmjs.com/creating-and-viewing-access-tokens)
-   stored as the `NPM_TOKEN` repository secret. Then, on npmjs.com >
-   package > Settings > Trusted publishing, add GitHub Actions with
+1. **npm Trusted Publishing** (already configured). On npmjs.com > package >
+   Settings > Trusted publishing, GitHub Actions is the trusted publisher with
    repository `LukastBorges/biome-plugin-tanstack-query`, workflow
-   `release.yml` and environment `npm`; delete the `NPM_TOKEN` secret and set
-   Publishing access to "Require two-factor authentication and disallow
-   tokens". From then on every release authenticates through OIDC and gets a
-   provenance attestation automatically.
+   `release.yml`, environment `npm`, and allowed actions `npm publish`.
+   Publishing access is "Require two-factor authentication and disallow
+   tokens", so there is no `NPM_TOKEN` anywhere: every release authenticates
+   through OIDC and gets a provenance attestation automatically. If the
+   package ever had to move to another repository or workflow, update the
+   trusted publisher there (npm only allows it on an existing package; the
+   first release of 1.0.0 was bootstrapped with a short-lived token that has
+   since been revoked).
 2. **Environment** `npm` (Settings > Environments): restrict deployment
    branches to `main` and `next`.
 3. **Branch protection / rulesets** on `main`: require the CI checks and the

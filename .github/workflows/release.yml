@@ -10,6 +10,8 @@
 #       owner/repo  LukastBorges/biome-plugin-tanstack-query
 #       workflow    release.yml
 #       environment npm
+#       allowed     npm publish (dist-tag not needed)
+#     Publishing access is "Require 2FA and disallow tokens".
 #   - GitHub: the built-in GITHUB_TOKEN (scoped by `permissions` below) pushes
 #     the release commit + tag and creates the GitHub release.
 name: Release
@@ -92,10 +94,6 @@ jobs:
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Fallback only. Trusted Publishing is tried first; NPM_TOKEN is used
-          # only if the OIDC exchange fails, e.g. for the very first publish
-          # (npm can only attach a trusted publisher to an existing package).
-          # After bootstrapping: configure the trusted publisher, delete this
-          # secret, and set the package to "disallow tokens" on npmjs.com.
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # No NPM_TOKEN: npm authenticates through Trusted Publishing (OIDC)
+          # only, and the package is set to "disallow tokens" on npmjs.com.
         run: npx --no-install semantic-release
