@@ -58,7 +58,7 @@
     "conventional-changelog-conventionalcommits": "^9.3.1",
     "fast-check": "^4.10.2",
     "semantic-release": "^25.0.9",
-    "typescript": "^5.9.0",
+    "typescript": "^7.0.2",
     "vitest": "^5.0.0"
   },
   "peerDependencies": {
