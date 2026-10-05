@@ -236,6 +236,20 @@ The preset is still about 2.7× slower than listing the same rules as individual
 
 This list is exactly the `recommended` preset. It also avoids the [preset fix caveat](#fixes-in-the-presets-biome-25-behavior) and allows per-rule suppressions. `prefer-query-options`, the extra rule in `recommended-strict.grit`, is the most expensive rule.
 
+## Troubleshooting
+
+### VS Code shows "Notify file events failed: Client is not running (-32096)"
+
+This popup comes from the Biome VS Code extension, not from this plugin. The extension restarts its language server whenever a lockfile (`package-lock.json`, `bun.lock`, …) or `biome.json` changes. While it restarts, VS Code keeps sending file-change events, and each one fails with this error. Linting keeps working. The popup shows up after every `npm install` / `bun add`, with or without plugins.
+
+To make it rarer or hide it:
+
+- **Hide the popup.** Turn off notifications for the Biome extension with the gear icon on the notification. The errors still go to the Biome output channel.
+- **Batch dependency changes.** Each install rewrites the lockfile and triggers one restart.
+- **Close the lockfile tab during installs.** An open lockfile gets diagnosed again after every restart, which adds more errors to the log.
+- **Stop leftover Biome servers after upgrading Biome.** Run `pkill -f "biome __run_server"`, then **Developer: Reload Window**.
+- **Close other Biome workspaces you don't need.** VS Code windows using the same Biome version share one Biome server, so a restart in one window also hits the others.
+
 ## Supply-chain security
 
 - Releases are built and published only from [GitHub Actions](.github/workflows/release.yml) through [npm trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC, no long-lived tokens), with [provenance](https://docs.npmjs.com/generating-provenance-statements) linking each tarball to the commit and workflow run that built it. To verify your installed copy:
