@@ -1,6 +1,6 @@
 {
   "name": "biome-plugin-tanstack-query",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "GritQL port of @tanstack/eslint-plugin-query for the Biome linter.",
   "keywords": [
     "biome",
