@@ -89,18 +89,21 @@ Use **either** a preset **or** individual files for a given rule, not both. Othe
 
 ### Limit the plugin to some files
 
-Biome 2.5 accepts an object form with `includes` globs:
+Declare the plugin in an `overrides` entry instead of the top-level `plugins`:
 
 ```json
 {
-  "plugins": [
+  "overrides": [
     {
-      "path": "./node_modules/biome-plugin-tanstack-query/rules/index.grit",
-      "includes": ["src/**/*.{ts,tsx}", "!**/*.test.tsx"]
+      "includes": ["src/**/*.{ts,tsx}", "!**/*.test.tsx"],
+      "plugins": ["./node_modules/biome-plugin-tanstack-query/rules/index.grit"]
     }
   ]
 }
 ```
+
+> [!WARNING]
+> Biome 2.5 also accepts `{ "path": "...", "includes": [...] }` entries in `plugins`, but it matches those globs against absolute file paths. A relative glob like `src/**/*.ts` never matches, so the plugin loads but reports nothing, and Biome shows no warning. Use `overrides`, or prefix the glob with `**/` (`**/src/**/*.ts`). The `**/` prefix also matches any other folder named `src`. Tracked upstream in [biomejs/biome#11082](https://github.com/biomejs/biome/issues/11082).
 
 ### Package-manager notes
 
