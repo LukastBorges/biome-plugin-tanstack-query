@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -52,6 +52,13 @@ export interface RunOptions {
   write?: boolean
   /** Also apply unsafe fixes (`--write --unsafe`). */
   unsafe?: boolean
+  /** Where to put the file inside the temporary project. Defaults to its basename at the root. */
+  path?: string
+  /**
+   * Limit the plugins to these globs, either through the `includes` of each
+   * `plugins` entry or through an `overrides` entry.
+   */
+  scope?: { includes: string[]; via: 'plugin-entry' | 'override' }
 }
 
 interface JsonReport {
@@ -74,8 +81,12 @@ interface JsonReport {
 export async function runBiome(fixturePath: string, options: RunOptions): Promise<BiomeRun> {
   const dir = await mkdtemp(join(tmpdir(), 'biome-plugin-tanstack-query-'))
   try {
-    const target = join(dir, basename(fixturePath))
+    const path = options.path ?? basename(fixturePath)
+    const target = join(dir, path)
+    await mkdir(dirname(target), { recursive: true })
     await copyFile(fixturePath, target)
+    const plugins = options.plugins.map((plugin) => join(RULES_DIR, plugin))
+    const { scope } = options
     await writeFile(
       join(dir, 'biome.json'),
       JSON.stringify(
@@ -88,7 +99,13 @@ export async function runBiome(fixturePath: string, options: RunOptions): Promis
           // Built-in rules are not under test, and their fixes would leak into
           // the `--write` expectations. `preset` exists since Biome 2.5.0.
           linter: { enabled: true, rules: { preset: 'none' } },
-          plugins: options.plugins.map((plugin) => join(RULES_DIR, plugin)),
+          plugins:
+            scope?.via === 'plugin-entry'
+              ? plugins.map((plugin) => ({ path: plugin, includes: scope.includes }))
+              : scope
+                ? []
+                : plugins,
+          ...(scope?.via === 'override' && { overrides: [{ includes: scope.includes, plugins }] }),
         },
         null,
         2,
@@ -98,7 +115,7 @@ export async function runBiome(fixturePath: string, options: RunOptions): Promis
     const args = ['lint', '--reporter=json', '--max-diagnostics=none', '--colors=off']
     if (options.write || options.unsafe) args.push('--write')
     if (options.unsafe) args.push('--unsafe')
-    args.push(basename(target))
+    args.push(path)
 
     let stdout: string
     let stderr: string
