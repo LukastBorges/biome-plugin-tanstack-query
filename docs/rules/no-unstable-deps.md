@@ -155,7 +155,7 @@ or named like a wrapper hook (`useTodos`) shadows the import or the top-level wr
 - **Declarations upstream follows by name only**: a `useQuery` declared at module top level (an
   invalid hook call anyway), or inside a block and referenced after it (out of scope in JS).
 - **React aliases that do not start with `use`**: `import { useMemo as memo } from 'react'` is not
-  recognised (upstream recognises any alias from the exact specifier `"React"`).
+  recognised (upstream recognises any alias from `"react"`).
 - **Wrapper hooks named like React built-ins** (`useState`, `useRef`, `useContext`, ...) are never
   followed.
 - **Wrappers written unusually**: before resolving a wrapper, the rule checks that the file text
@@ -182,9 +182,6 @@ or named like a wrapper hook (`useTodos`) shadows the import or the top-level wr
 
 ### Other differences
 
-- **React aliases**: upstream recognises `import { useMemo as useX }` only from the exact
-  specifier `"React"` (capitalised); this port accepts `"react"` and `"React"`. Aliases imported
-  from anywhere else (e.g. `preact/hooks`) are ignored by both.
 - `import { type useQuery } from '@tanstack/react-query'` (inline type modifier) still counts as
   an import, as upstream; `import type { useQuery }` does not.
 

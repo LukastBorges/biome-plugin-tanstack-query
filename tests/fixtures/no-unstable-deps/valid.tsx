@@ -4,6 +4,8 @@
 import * as React from 'react'
 import { useCallback, useEffect, useMemo } from 'react'
 import { useMemo as useMemoFromPreact } from 'preact/hooks'
+// Not the react package: the specifier is case-sensitive (upstream since 5.104.4).
+import { useMemo as useMemoFromCapitalReact } from 'React'
 import type { useInfiniteQuery as useInfiniteQueryType } from '@tanstack/react-query'
 import {
   useQueries,
@@ -102,6 +104,7 @@ export function OtherHooks() {
   React.useLayoutEffect(() => {}, [query])
   useEffectEvent(() => {}, [query])
   useMemoFromPreact(() => query.data, [query])
+  useMemoFromCapitalReact(() => query.data, [query])
   ReactDOM.useMemo(() => query.data, [query])
   useMemoized(() => query.data, [query])
   useEffect(() => {
