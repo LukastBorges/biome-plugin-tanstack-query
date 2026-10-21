@@ -39,6 +39,10 @@ updates:
       # with "Missing helper". Revisit with release-notes-generator 15.
       - dependency-name: conventional-changelog-conventionalcommits
         update-types: [version-update:semver-major]
+      # Keep the Node typings on the major in .nvmrc, so code type-checks only
+      # against APIs the Node version used for development and CI provides.
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: github-actions
     directory: /
