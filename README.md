@@ -90,7 +90,20 @@ Use **either** a preset **or** individual files for a given rule, not both. Othe
 
 ### Limit the plugin to some files
 
-Declare the plugin in an `overrides` entry instead of the top-level `plugins`:
+With Biome 2.6.2 or later, give the `plugins` entry its own `includes`:
+
+```json
+{
+  "plugins": [
+    {
+      "path": "./node_modules/biome-plugin-tanstack-query/rules/index.grit",
+      "includes": ["src/**/*.{ts,tsx}", "!**/*.test.tsx"]
+    }
+  ]
+}
+```
+
+On any supported Biome version, you can instead declare the plugin in an `overrides` entry rather than the top-level `plugins`:
 
 ```json
 {
@@ -104,7 +117,7 @@ Declare the plugin in an `overrides` entry instead of the top-level `plugins`:
 ```
 
 > [!WARNING]
-> Biome 2.5 also accepts `{ "path": "...", "includes": [...] }` entries in `plugins`, but it matches those globs against absolute file paths. A relative glob like `src/**/*.ts` never matches, so the plugin loads but reports nothing, and Biome shows no warning. Use `overrides`, or prefix the glob with `**/` (`**/src/**/*.ts`). The `**/` prefix also matches any other folder named `src`. Tracked upstream in [biomejs/biome#11082](https://github.com/biomejs/biome/issues/11082).
+> Before 2.6.2, Biome matches the `includes` of a `plugins` entry against absolute file paths. A relative glob like `src/**/*.ts` never matches, so the plugin loads but reports nothing, and Biome shows no warning. On those versions, use `overrides`, or prefix the glob with `**/` (`**/src/**/*.ts`). The `**/` prefix also matches any other folder named `src`. Fixed in Biome 2.6.2 ([biomejs/biome#11082](https://github.com/biomejs/biome/issues/11082)).
 
 ### Package-manager notes
 

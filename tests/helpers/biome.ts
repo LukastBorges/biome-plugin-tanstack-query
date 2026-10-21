@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -23,6 +23,26 @@ const BIOME_BIN =
 // Never forward a BIOME_BINARY from the caller's environment: pointing it at
 // the JS launcher makes the launcher re-spawn itself forever.
 const { BIOME_BINARY: _ignored, ...CHILD_ENV } = process.env
+
+/** Version of the Biome CLI under test, e.g. `[2, 6, 2]`. */
+export const BIOME_VERSION = parseVersion(
+  execFileSync(process.execPath, [BIOME_BIN, '--version'], { env: CHILD_ENV, encoding: 'utf8' }),
+)
+
+/** Whether the Biome CLI under test is at least `version` (`major.minor.patch`). */
+export function biomeAtLeast(version: string): boolean {
+  const minimum = parseVersion(version)
+  for (let i = 0; i < 3; i++) {
+    if (BIOME_VERSION[i] !== minimum[i]) return BIOME_VERSION[i] > minimum[i]
+  }
+  return true
+}
+
+function parseVersion(text: string): [number, number, number] {
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(text)
+  if (!match) throw new Error(`Not a Biome version: ${text}`)
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
 
 /** Every diagnostic message emitted by this plugin starts with this prefix. */
 export const MESSAGE_PREFIX = /^@tanstack\/query\/([a-z-]+): /
