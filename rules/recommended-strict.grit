@@ -1,7 +1,7 @@
 // GENERATED FILE - DO NOT EDIT. Run `npm run build` to regenerate.
 //
 // biome-plugin-tanstack-query@1.0.2: "recommended-strict" preset.
-// Mirrors the "recommended-strict" config of @tanstack/eslint-plugin-query@5.104.1.
+// Mirrors the "recommended-strict" config of @tanstack/eslint-plugin-query@5.104.5.
 //
 // Rules: exhaustive-deps, infinite-query-property-order, mutation-property-order, no-rest-destructuring, no-unstable-deps, no-void-query-fn, prefer-query-options, stable-query-client
 //
@@ -1097,9 +1097,8 @@ pattern tanstack_query_no_unstable_deps_dependency($react_hook) {
 //   - a bare `useEffect` / `useCallback` / `useMemo` identifier (upstream does not check where it
 //     comes from either),
 //   - `React.useEffect(...)` and friends, on an object literally named `React`,
-//   - a local alias imported from react: `import { useMemo as useStableValue } from 'react'`.
-//     (Upstream only recognises aliases imported from the exact specifier "React"; this port
-//     accepts both "react" and "React".)
+//   - a local alias imported from react: `import { useMemo as useStableValue } from 'react'`
+//     (the exact, lowercase specifier, as upstream since 5.104.4).
 pattern tanstack_query_no_unstable_deps_react_hook($react_hook) {
   or {
     JsIdentifierExpression(name = $react_hook) where {
@@ -1117,8 +1116,8 @@ pattern tanstack_query_no_unstable_deps_react_hook($react_hook) {
       $program <: includes `as $react_hook`,
       $react_hook <: within JsModule(items = some JsImport(import_clause = $clause) where {
         $clause <: tanstack_query_no_unstable_deps_value_import($module),
-        // The module literal is matched with its quotes: "react" / 'react' (or "React").
-        $module <: r"['\"][Rr]eact['\"]",
+        // The module literal is matched with its quotes: "react" / 'react'.
+        $module <: r"['\"]react['\"]",
         $clause <: contains JsNamedImportSpecifier(
           name = r"(?:useEffect|useCallback|useMemo)",
           local_name = $local

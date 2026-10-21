@@ -1,6 +1,5 @@
 import * as React from 'react'
-import { useCallback, useEffect, useMemo, useCallback as useStableCallback } from 'react'
-import { useMemo as useMemoAlias } from 'React'
+import { useCallback, useEffect, useMemo, useCallback as useStableCallback, useMemo as useMemoAlias } from 'react'
 import {
   useInfiniteQuery,
   useMutation,
