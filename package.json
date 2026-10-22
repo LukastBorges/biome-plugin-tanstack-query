@@ -24,6 +24,7 @@
   "author": "Lucas Borges (https://github.com/LukastBorges)",
   "type": "module",
   "files": [
+    "biome-manifest.json",
     "rules/*.grit"
   ],
   "scripts": {

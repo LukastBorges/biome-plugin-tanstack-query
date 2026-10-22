@@ -25,11 +25,11 @@ npm run check   # everything CI runs: lint, typecheck, presets, tests, tarball
 | ------------------------ | ----------------------------------------------------------------------------------------------- |
 | `npm test`               | Runs the vitest suite: the real Biome CLI against every rule's fixtures.                        |
 | `npx vitest run -t <rule>` | Only the tests of one rule, e.g. `-t no-rest-destructuring`.                                  |
-| `npm run build`          | Regenerates the presets `rules/index.grit` and `rules/recommended-strict.grit`.                |
-| `npm run check:index`    | Fails if the committed presets are stale.                                                       |
+| `npm run build`          | Regenerates the presets `rules/index.grit` and `rules/recommended-strict.grit`, and `biome-manifest.json`. |
+| `npm run check:index`    | Fails if the committed presets or manifest are stale.                                           |
 | `npm run lint` / `lint:fix` | Biome on the repository's own code (fixtures are excluded).                                  |
 | `npm run typecheck`      | `tsc --noEmit` over the tests.                                                                  |
-| `npm run pack:check`     | Asserts the npm tarball contains exactly `package.json`, `README.md`, `LICENSE`, `rules/*.grit`. |
+| `npm run pack:check`     | Asserts the npm tarball contains exactly `package.json`, `README.md`, `LICENSE`, `biome-manifest.json`, `rules/*.grit`. |
 | `npm run check:upstream` | Compares the mirrored upstream version with npm (`--dry-run` to only print the report).        |
 | `npm run lint:commits`   | Lints the commit messages of your branch (since `origin/main`).                                |
 
@@ -39,9 +39,11 @@ npm run check   # everything CI runs: lint, typecheck, presets, tests, tarball
 rules/<rule>.grit              one standalone Biome plugin per upstream rule (hand-written)
 rules/index.grit               GENERATED "recommended" preset (all rules composed)
 rules/recommended-strict.grit  GENERATED "recommended-strict" preset
-scripts/build-index.js         generates the presets; defines which rule is in which preset
+biome-manifest.json            GENERATED package manifest: rules and presets by name (Biome >= 2.6.2)
+scripts/build-index.js         generates the presets and the manifest; defines which rule is in which preset
 tests/fixtures/<rule>/         valid.tsx, invalid.tsx (+ optional expected fix outputs)
 tests/plugin.test.ts           the suite (runs Biome per fixture in an isolated temp project)
+tests/manifest.test.ts         the same fixtures, loaded by package name through the manifest
 docs/rules/<rule>.md           per-rule documentation, linked from the README
 ```
 
@@ -50,8 +52,13 @@ cannot import patterns from another file. That is why the presets are
 *generated*: `scripts/build-index.js` concatenates the pattern definitions of
 every rule file and calls all entry points inside one `any { ... }`, grouped by
 the node kind each rule anchors on. Never edit
-`rules/index.grit` or `rules/recommended-strict.grit` by hand; run
-`npm run build` and commit the result (CI fails otherwise).
+`rules/index.grit`, `rules/recommended-strict.grit` or `biome-manifest.json` by
+hand; run `npm run build` and commit the result (CI fails otherwise).
+
+The manifest maps each rule name to its standalone file and each preset to its
+rule names. Biome 2.6.2+ loads every rule of a manifest preset as a separate
+plugin, so the per-file pitfalls of the `.grit` presets (cost, bundled fixes,
+whole-preset suppressions) do not apply to it.
 
 ## Porting or changing a rule
 
@@ -109,7 +116,8 @@ and { JsCallExpression(), tanstack_query_<rule_name>() }
   list (`() => x`, `function () {}`) currently panic the linter.
 
 Suppressions work per plugin file: `// biome-ignore lint/plugin/<rule-name>: reason`
-for a standalone rule, `// biome-ignore lint/plugin: reason` for any plugin.
+for a standalone rule, `lint/plugin/biome-plugin-tanstack-query/<rule-name>` for a
+rule loaded by package name, `// biome-ignore lint/plugin: reason` for any plugin.
 
 ### 3. Fixtures: `tests/fixtures/<rule-name>/`
 

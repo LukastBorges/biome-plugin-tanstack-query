@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Generates the composed preset plugins (`rules/index.grit` and
-// `rules/recommended-strict.grit`) from the standalone rule files.
+// `rules/recommended-strict.grit`) from the standalone rule files, and the
+// package manifest (`biome-manifest.json`) that lets Biome >= 2.6.2 load the
+// rules and presets by package name.
 //
 // Biome loads exactly one top-level pattern per `.grit` file and cannot import
 // patterns from other files, so the presets are produced by concatenating the
@@ -25,8 +27,8 @@
 // recommended preset ~4x faster than a flat `any { rule_a(), rule_b(), ... }`.
 //
 // Usage:
-//   node scripts/build-index.js          # (re)write the presets
-//   node scripts/build-index.js --check  # exit 1 if the presets are stale
+//   node scripts/build-index.js          # (re)write the presets and the manifest
+//   node scripts/build-index.js --check  # exit 1 if any of them is stale
 
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -67,6 +69,8 @@ export const PRESETS = {
 }
 
 export const GENERATED_FILES = Object.keys(PRESETS).map((name) => `${name}.grit`)
+
+export const MANIFEST_FILE = 'biome-manifest.json'
 
 export function entryPointName(rule) {
   return `tanstack_query_${rule.replaceAll('-', '_')}`
@@ -184,13 +188,45 @@ ${entries}
 `
 }
 
+/**
+ * Renders `biome-manifest.json`. Unlike the `.grit` presets, a manifest preset
+ * loads each rule as its own plugin (`biome-plugin-tanstack-query/<rule>`), so
+ * it runs as fast as listing the rule files, applies every fix with plain
+ * `--write`, and can be suppressed per rule.
+ */
+export function renderManifest() {
+  const rules = listRuleFiles()
+  const presets = {}
+  for (const [name, preset] of Object.entries(PRESETS)) {
+    const missing = preset.rules.filter((rule) => !rules.includes(rule))
+    if (missing.length > 0) {
+      throw new Error(
+        `preset "${name}" references missing rule file(s): ${missing.map((rule) => `rules/${rule}.grit`).join(', ')}`,
+      )
+    }
+    presets[preset.title] = preset.rules
+  }
+  const manifest = {
+    version: 1,
+    plugins: {
+      rules: [Object.fromEntries(rules.map((rule) => [rule, `rules/${rule}.grit`]))],
+      presets,
+    },
+  }
+  return `${JSON.stringify(manifest, null, 2)}\n`
+}
+
 function main() {
   const check = process.argv.includes('--check')
   let stale = false
 
-  for (const name of Object.keys(PRESETS)) {
-    const file = join(RULES_DIR, `${name}.grit`)
-    const next = renderPreset(name)
+  const outputs = [
+    ...Object.keys(PRESETS).map((name) => [`rules/${name}.grit`, () => renderPreset(name)]),
+    [MANIFEST_FILE, renderManifest],
+  ]
+  for (const [path, render] of outputs) {
+    const file = join(ROOT, path)
+    const next = render()
     let current = null
     try {
       current = readFileSync(file, 'utf8')
@@ -198,11 +234,11 @@ function main() {
 
     if (current === next) continue
     if (check) {
-      console.error(`rules/${name}.grit is out of date. Run \`npm run build\`.`)
+      console.error(`${path} is out of date. Run \`npm run build\`.`)
       stale = true
     } else {
       writeFileSync(file, next)
-      console.log(`wrote rules/${name}.grit`)
+      console.log(`wrote ${path}`)
     }
   }
 

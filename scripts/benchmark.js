@@ -9,8 +9,9 @@
 //   mirrors (package.json#upstream.version) with its `flat/recommended` config,
 //   untyped and with type information (`projectService`), single-threaded and
 //   with `--concurrency=auto`.
-// - Biome runs the locally built `rules/index.grit` (and the standalone rule
-//   files), plus a run without plugins as a baseline.
+// - Biome runs the locally built `rules/index.grit`, the standalone rule files
+//   and the `recommended` preset of `biome-manifest.json` (loaded by package
+//   name), plus a run without plugins as a baseline.
 // - Every configuration is timed end-to-end (process start to exit, JSON output
 //   written to a file) after one warm-up run; the median and minimum are shown.
 //   Findings are counted per rule to check that both sides do comparable work.
@@ -21,7 +22,7 @@
 //   node scripts/benchmark.js [--files 300] [--runs 5] [--seed 1] [--no-typed] [--json]
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { availableParallelism, cpus, platform, release } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -542,9 +543,20 @@ export default [{ files: ['src/**/*.{ts,tsx}'], languageOptions: { parser: tsesl
     ['none', []],
     ['index', [join(ROOT, 'rules', 'index.grit')]],
     ['standalone', standalone],
+    ['manifest', [`${pkg.name}/presets/recommended`]],
   ]) {
     mkdirSync(join(BENCH, 'biome', name), { recursive: true })
     writeFileSync(join(BENCH, 'biome', name, 'biome.json'), `${JSON.stringify(biomeConfig(plugins), null, 2)}\n`)
+  }
+
+  // Biome resolves plugin packages from the project root (the working
+  // directory), not from the config. Install the local build there, with the
+  // files npm publishes.
+  const installed = join(BENCH, 'node_modules', pkg.name)
+  rmSync(installed, { recursive: true, force: true })
+  mkdirSync(installed, { recursive: true })
+  for (const file of ['package.json', 'biome-manifest.json', 'rules']) {
+    cpSync(join(ROOT, file), join(installed, file), { recursive: true })
   }
 }
 
@@ -612,7 +624,9 @@ function runOnce(testCase) {
 }
 
 function countFindings(tool) {
-  if (!existsSync(OUT())) return {}
+  // Biome writes no report when a plugin fails to load, which would otherwise
+  // look like a very fast run with no findings.
+  if (!existsSync(OUT())) throw new Error(`${tool} wrote no report to ${OUT()}`)
   const raw = readFileSync(OUT(), 'utf8')
   const counts = {}
   const add = (rule) => {
@@ -677,15 +691,16 @@ function renderMarkdown(report) {
         `| ${r.label} | ${formatSeconds(r.medianMs)} | ${formatSeconds(r.minMs)} | ${(fastestEslint / r.medianMs).toFixed(1)}× |`,
     ),
     '',
-    '| Rule | Injected | ESLint (typed) | ESLint (untyped) | Biome (`index.grit`) |',
-    '| ---- | -------: | -------------: | ---------------: | -------------------: |',
+    '| Rule | Injected | ESLint (typed) | ESLint (untyped) | Biome (`index.grit`) | Biome (manifest) |',
+    '| ---- | -------: | -------------: | ---------------: | -------------------: | ---------------: |',
   ]
   const typed = results.find((r) => r.id === 'eslint-typed')
   const untyped = results.find((r) => r.id === 'eslint-untyped')
   const biome = results.find((r) => r.id === 'biome-index')
+  const manifest = results.find((r) => r.id === 'biome-manifest')
   for (const rule of VIOLATIONS) {
     lines.push(
-      `| \`${rule}\` | ${corpus.injected[rule]} | ${typed ? (typed.findings[rule] ?? 0) : 'n/a'} | ${untyped.findings[rule] ?? 0} | ${biome.findings[rule] ?? 0} |`,
+      `| \`${rule}\` | ${corpus.injected[rule]} | ${typed ? (typed.findings[rule] ?? 0) : 'n/a'} | ${untyped.findings[rule] ?? 0} | ${biome.findings[rule] ?? 0} | ${manifest.findings[rule] ?? 0} |`,
     )
   }
   return lines.join('\n')
@@ -716,6 +731,7 @@ function main() {
     { id: 'biome-none', ...biomeCase('Biome, no plugins', 'none') },
     { id: 'biome-index', ...biomeCase('Biome + `index.grit`', 'index') },
     { id: 'biome-standalone', ...biomeCase('Biome + 7 standalone rule files', 'standalone') },
+    { id: 'biome-manifest', ...biomeCase('Biome + `presets/recommended` (manifest)', 'manifest') },
   ]
 
   log(`Benchmarking ${FILES} files (${lines} lines) on ${threads} threads ...`)

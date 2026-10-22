@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process'
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -12,6 +12,7 @@ const require = createRequire(import.meta.url)
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 export const RULES_DIR = join(ROOT, 'rules')
 export const FIXTURES_DIR = join(ROOT, 'tests', 'fixtures')
+export const PACKAGE_NAME = 'biome-plugin-tanstack-query'
 
 // Resolve the CLI the same way a consumer's `npx biome` would. Setting
 // BIOME_PLUGIN_TEST_BIN to another `@biomejs/biome/bin/biome` script runs the
@@ -66,7 +67,11 @@ export interface BiomeRun {
 }
 
 export interface RunOptions {
-  /** Plugin file names relative to `rules/`, e.g. `['no-rest-destructuring.grit']`. */
+  /**
+   * Plugin file names relative to `rules/`, e.g. `['no-rest-destructuring.grit']`,
+   * or names resolved through `biome-manifest.json`, e.g.
+   * `['biome-plugin-tanstack-query/presets/recommended']`.
+   */
   plugins: string[]
   /** Apply safe fixes (`--write`). */
   write?: boolean
@@ -105,7 +110,9 @@ export async function runBiome(fixturePath: string, options: RunOptions): Promis
     const target = join(dir, path)
     await mkdir(dirname(target), { recursive: true })
     await copyFile(fixturePath, target)
-    const plugins = options.plugins.map((plugin) => join(RULES_DIR, plugin))
+    const fromPackage = (plugin: string) => plugin.startsWith(`${PACKAGE_NAME}/`)
+    if (options.plugins.some(fromPackage)) await installPackage(dir)
+    const plugins = options.plugins.map((plugin) => (fromPackage(plugin) ? plugin : join(RULES_DIR, plugin)))
     const { scope } = options
     await writeFile(
       join(dir, 'biome.json'),
@@ -183,6 +190,17 @@ export async function runBiome(fixturePath: string, options: RunOptions): Promis
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+}
+
+/** Installs this repository into `<dir>/node_modules` the way npm would, with the files it publishes. */
+async function installPackage(dir: string): Promise<void> {
+  const target = join(dir, 'node_modules', PACKAGE_NAME)
+  await mkdir(target, { recursive: true })
+  await Promise.all([
+    copyFile(join(ROOT, 'package.json'), join(target, 'package.json')),
+    copyFile(join(ROOT, 'biome-manifest.json'), join(target, 'biome-manifest.json')),
+    cp(RULES_DIR, join(target, 'rules'), { recursive: true }),
+  ])
 }
 
 function parseReport(stdout: string, stderr: string): JsonReport {

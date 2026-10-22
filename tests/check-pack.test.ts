@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { comparePack } from '../scripts/check-pack.js'
 
 const rules = ['rules/index.grit', 'rules/no-rest-destructuring.grit', 'rules/recommended-strict.grit']
-const good = ['LICENSE', 'README.md', 'package.json', ...rules]
+const good = ['LICENSE', 'README.md', 'biome-manifest.json', 'package.json', ...rules]
 
 describe('scripts/check-pack.js', () => {
-  it('accepts exactly the plugins, README, LICENSE and package.json', () => {
+  it('accepts exactly the plugins, manifest, README, LICENSE and package.json', () => {
     expect(comparePack(good, rules)).toEqual({ missing: [], unexpected: [] })
   })
 
@@ -27,10 +27,10 @@ describe('scripts/check-pack.js', () => {
     ])
   })
 
-  it('reports missing rule files and presets even when they are absent on disk', () => {
+  it('reports missing rule files, presets and manifest even when they are absent on disk', () => {
     const packed = ['LICENSE', 'README.md', 'package.json', 'rules/no-rest-destructuring.grit']
     expect(comparePack(packed, ['rules/no-rest-destructuring.grit', 'rules/stable-query-client.grit']).missing).toEqual(
-      ['rules/index.grit', 'rules/recommended-strict.grit', 'rules/stable-query-client.grit'],
+      ['biome-manifest.json', 'rules/index.grit', 'rules/recommended-strict.grit', 'rules/stable-query-client.grit'],
     )
   })
 })
