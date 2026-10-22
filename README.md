@@ -31,6 +31,7 @@ Biome does not run ESLint plugins. It does run plugins written in [GritQL](https
 
 - Each row covers the plugin releases that mirror the same upstream version. The table is updated automatically on every release (`scripts/sync-version.js`).
 - The mirrored version is recorded in [`package.json#upstream`](package.json). A [daily job](.github/workflows/upstream-check.yml) opens an issue when TanStack publishes a newer release, with a diff of new, removed and changed rules (see [Staying in sync](#staying-in-sync-with-upstream)).
+- Loading the plugin [by package name](#by-package-name-biome-262-or-later) needs **Biome 2.6.2** or later. Earlier versions use the [file paths](#by-file-path-any-supported-biome-version).
 - **Biome 2.5.2** is the tested minimum. CI runs the full suite against that version and against the latest Biome release (the exact dev dependency, kept current by Dependabot). In 2.5.0 and 2.5.1 several rules fail to compile, and earlier versions cannot express plugin fixes.
 
 ## Installation
@@ -44,9 +45,39 @@ npm install --save-dev @biomejs/biome biome-plugin-tanstack-query
 
 ## Configuration
 
-Biome's `plugins` option takes **file paths, not package names**, so you point it at the `.grit` file inside `node_modules`. The path is relative to your `biome.json`.
+### By package name (Biome 2.6.2 or later)
 
-### Recommended (mirrors `plugin:@tanstack/query/recommended`)
+The package ships a [`biome-manifest.json`](biome-manifest.json), so Biome 2.6.2 and later can load its rules and presets by name:
+
+```jsonc
+// biome.json
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "plugins": ["biome-plugin-tanstack-query/presets/recommended"]
+}
+```
+
+| Plugin entry | Loads |
+| ------------ | ----- |
+| `"biome-plugin-tanstack-query/presets/recommended"` | the rules of `plugin:@tanstack/query/recommended` |
+| `"biome-plugin-tanstack-query/presets/recommended-strict"` | the above plus `prefer-query-options` (`plugin:@tanstack/query/recommended-strict`) |
+| `"biome-plugin-tanstack-query/<rule>"` | one rule, e.g. `"biome-plugin-tanstack-query/exhaustive-deps"` |
+
+Prefer this to the file paths below when your Biome version supports it. A manifest preset loads every rule as its own plugin, so:
+
+- it runs as fast as listing the rule files individually, about 2.5× faster than `index.grit` (see [Performance](#presets-vs-individual-rule-files));
+- `biome lint --write` applies every fix (the [preset fix caveat](#fixes-in-the-presets-biome-25-behavior) does not apply);
+- you can suppress one rule at a time with `lint/plugin/biome-plugin-tanstack-query/<rule>` (see [Suppressing a finding](#suppressing-a-finding)).
+
+Run `npx biome inspect plugins` to list the rules that are enabled.
+
+Install the package as a direct dependency of the project that holds `biome.json` (see [Package-manager notes](#package-manager-notes)). `includes` and `overrides` work as shown in [Limit the plugin to some files](#limit-the-plugin-to-some-files).
+
+### By file path (any supported Biome version)
+
+Before 2.6, Biome's `plugins` option takes **file paths, not package names**, so you point it at the `.grit` file inside `node_modules`. The path is relative to your `biome.json`. This still works on 2.6.
+
+#### Recommended (mirrors `plugin:@tanstack/query/recommended`)
 
 ```jsonc
 // biome.json
@@ -62,7 +93,7 @@ Then lint as usual:
 npx biome lint .          # or: npx biome check .
 ```
 
-### Strict (mirrors `plugin:@tanstack/query/recommended-strict`)
+#### Strict (mirrors `plugin:@tanstack/query/recommended-strict`)
 
 This preset adds `prefer-query-options` to the recommended rules:
 
@@ -72,7 +103,7 @@ This preset adds `prefer-query-options` to the recommended rules:
 }
 ```
 
-### Pick individual rules
+#### Pick individual rules
 
 Every rule is also published as its own plugin file:
 
@@ -86,7 +117,7 @@ Every rule is also published as its own plugin file:
 }
 ```
 
-Use **either** a preset **or** individual files for a given rule, not both. Otherwise the rule runs twice and every finding is reported twice.
+Use **either** a preset **or** individual rules for a given rule, not both, with package names as with file paths. Otherwise the rule runs twice and every finding is reported twice.
 
 ### Limit the plugin to some files
 
@@ -121,7 +152,7 @@ On any supported Biome version, you can instead declare the plugin in an `overri
 
 ### Package-manager notes
 
-- **npm, pnpm, Bun, and Yarn with `nodeLinker: node-modules`:** the path above works when the package is a direct dependency of the project that holds `biome.json`. pnpm symlinks direct dependencies into `node_modules`.
+- **npm, pnpm, Bun, and Yarn with `nodeLinker: node-modules`:** the package names and the paths above work when the package is a direct dependency of the project that holds `biome.json`. pnpm symlinks direct dependencies into `node_modules`.
 - **Monorepos:** install the package in the workspace that holds the `biome.json` which declares the plugin. Usually that is the root.
 - **Yarn Plug'n'Play:** packages stay inside zip archives, so Biome cannot read the `.grit` files. Set `nodeLinker: node-modules` in `.yarnrc.yml`, or vendor the `.grit` files into your repository.
 
@@ -164,6 +195,8 @@ GritQL plugins match the **shape of the syntax tree**. ESLint rules can also ask
 
 ### Fixes in the presets (Biome 2.5 behavior)
 
+This section applies to the `.grit` presets (`index.grit`, `recommended-strict.grit`) on every Biome version, not to the [package-name presets](#by-package-name-biome-262-or-later).
+
 Biome 2.5 attaches **all rewrites of one plugin file to the first diagnostic that file reports in a source file**. With a preset, that first diagnostic may belong to a rule without a fix. Then:
 
 - `biome lint --write` may skip the property-order fixes in that source file.
@@ -171,13 +204,17 @@ Biome 2.5 attaches **all rewrites of one plugin file to the first diagnostic tha
 - Biome's `FIXABLE` marker can appear on another rule's diagnostic.
 - A violation you suppressed with `biome-ignore` can still be rewritten when an earlier, unsuppressed violation in the same file carries the bundled fix.
 
-None of this happens when you list the property-order rules as **individual plugin files**. The test suite pins both behaviors, so this section stays accurate until Biome changes.
+None of this happens when you list the property-order rules as **individual plugin files**, or use a package-name preset. The test suite pins both behaviors, so this section stays accurate until Biome changes.
 
 ## Suppressing a finding
 
 Suppression comments use `lint/plugin/<plugin file name without .grit>`:
 
 ```ts
+// By package name (Biome 2.6.2 or later), with a preset or individual rules:
+// biome-ignore lint/plugin/biome-plugin-tanstack-query/exhaustive-deps: the key is built by a factory that already includes `id`
+const query = useQuery({ queryKey: todoKeys.detail(), queryFn: () => fetchTodo(id) })
+
 // With a preset (rules/index.grit):
 // biome-ignore lint/plugin/index: the key is built by a factory that already includes `id`
 const query = useQuery({ queryKey: todoKeys.detail(), queryFn: () => fetchTodo(id) })
@@ -190,7 +227,7 @@ const query = useQuery({ queryKey: todoKeys.detail(), queryFn: () => fetchTodo(i
 // biome-ignore lint/plugin: <reason>
 ```
 
-With a preset, `lint/plugin/index` (or `lint/plugin/recommended-strict`) silences every rule of the preset on that line. To suppress one specific rule, load that rule as an individual file.
+With a `.grit` preset, `lint/plugin/index` (or `lint/plugin/recommended-strict`) silences every rule of the preset on that line. To suppress one specific rule, load the plugin by package name, or load that rule as an individual file.
 
 ## Performance
 
@@ -253,6 +290,16 @@ The preset is still about 2.7× slower than listing the same rules as individual
 
 This list is exactly the `recommended` preset. It also avoids the [preset fix caveat](#fixes-in-the-presets-biome-25-behavior) and allows per-rule suppressions. `prefer-query-options`, the extra rule in `recommended-strict.grit`, is the most expensive rule.
 
+On Biome 2.6.2 or later, `"biome-plugin-tanstack-query/presets/recommended"` gives you the same speed in one line, because a [package-name preset](#by-package-name-biome-262-or-later) loads each rule as its own plugin. Same machine as above, Biome 2.6.2:
+
+| Configuration | 300 files | 1,000 files |
+| ------------- | --------: | ----------: |
+| Biome + `index.grit` | 0.38 s | 1.11 s |
+| Biome + the 7 recommended rules as individual files | 0.16 s | 0.40 s |
+| **Biome + `presets/recommended` (package name)** | **0.17 s** | **0.44 s** |
+
+All three report the same findings.
+
 ## Troubleshooting
 
 ### VS Code shows "Notify file events failed: Client is not running (-32096)"
@@ -286,7 +333,7 @@ To make it rarer or hide it:
     biome-plugin-tanstack-query-1.0.0.tgz
   ```
 
-- The tarball contains only `rules/*.grit`, `README.md`, `LICENSE` and `package.json`. There is no JavaScript, and there are no install scripts and no dependencies. CI enforces this with [`scripts/check-pack.js`](scripts/check-pack.js).
+- The tarball contains only `rules/*.grit`, `biome-manifest.json`, `README.md`, `LICENSE` and `package.json`. There is no JavaScript, and there are no install scripts and no dependencies. CI enforces this with [`scripts/check-pack.js`](scripts/check-pack.js).
 - Actions in the workflows are pinned to commit SHAs and updated by Dependabot. CodeQL scans the scripts and the workflows, and the [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/LukastBorges/biome-plugin-tanstack-query) runs weekly.
 - Known advisories in development-only release tooling that have no upstream fix are triaged, with reasons and expiry dates, in [`osv-scanner.toml`](osv-scanner.toml).
 - Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).

@@ -220,7 +220,15 @@ With the standalone plugin (`rules/exhaustive-deps.grit` in `biome.json`):
 useQuery({ queryKey: ['todos'], queryFn: () => client.getTodos(filters) })
 ```
 
-With a preset (`rules/index.grit` or `rules/recommended-strict.grit`), the category is named after
+Loaded by package name (Biome 2.6.2 or later), alone or through a preset, the category includes the
+package name:
+
+```tsx
+// biome-ignore lint/plugin/biome-plugin-tanstack-query/exhaustive-deps: the client is stable for the app's lifetime
+useQuery({ queryKey: ['todos'], queryFn: () => client.getTodos(filters) })
+```
+
+With a `.grit` preset (`rules/index.grit` or `rules/recommended-strict.grit`), the category is named after
 the preset file:
 
 ```tsx

@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "plugins": {
+    "rules": [
+      {
+        "exhaustive-deps": "rules/exhaustive-deps.grit",
+        "infinite-query-property-order": "rules/infinite-query-property-order.grit",
+        "mutation-property-order": "rules/mutation-property-order.grit",
+        "no-rest-destructuring": "rules/no-rest-destructuring.grit",
+        "no-unstable-deps": "rules/no-unstable-deps.grit",
+        "no-void-query-fn": "rules/no-void-query-fn.grit",
+        "prefer-query-options": "rules/prefer-query-options.grit",
+        "stable-query-client": "rules/stable-query-client.grit"
+      }
+    ],
+    "presets": {
+      "recommended": [
+        "exhaustive-deps",
+        "infinite-query-property-order",
+        "mutation-property-order",
+        "no-rest-destructuring",
+        "no-unstable-deps",
+        "no-void-query-fn",
+        "stable-query-client"
+      ],
+      "recommended-strict": [
+        "exhaustive-deps",
+        "infinite-query-property-order",
+        "mutation-property-order",
+        "no-rest-destructuring",
+        "no-unstable-deps",
+        "no-void-query-fn",
+        "prefer-query-options",
+        "stable-query-client"
+      ]
+    }
+  }
+}

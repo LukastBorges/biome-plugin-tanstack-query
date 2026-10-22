@@ -247,7 +247,14 @@ Standalone plugin (`rules/no-rest-destructuring.grit` in `biome.json`):
 const { data, ...rest } = useQuery({ queryKey, queryFn, notifyOnChangeProps: ['data'] })
 ```
 
-Preset (`rules/index.grit` or `rules/recommended-strict.grit` in
+Loaded by package name (Biome 2.6.2 or later), alone or through a preset:
+
+```tsx
+// biome-ignore lint/plugin/biome-plugin-tanstack-query/no-rest-destructuring: notifyOnChangeProps is set manually
+const { data, ...rest } = useQuery({ queryKey, queryFn, notifyOnChangeProps: ['data'] })
+```
+
+`.grit` preset (`rules/index.grit` or `rules/recommended-strict.grit` in
 `biome.json`), where the plugin name is the preset file name:
 
 ```tsx

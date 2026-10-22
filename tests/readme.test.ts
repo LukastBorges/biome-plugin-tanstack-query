@@ -24,4 +24,10 @@ describe('README.md', () => {
       expect(readme).toContain(`"./node_modules/biome-plugin-tanstack-query/rules/${preset}.grit"`)
     }
   })
+
+  it('shows the package names of the manifest presets', () => {
+    for (const { title } of Object.values(PRESETS)) {
+      expect(readme).toContain(`"biome-plugin-tanstack-query/presets/${title}"`)
+    }
+  })
 })
