@@ -2,8 +2,9 @@
 // Guards the contents of the published tarball.
 //
 // The package is consumed by pointing Biome at
-// `./node_modules/biome-plugin-tanstack-query/rules/<file>.grit`, so the
-// tarball must contain the GritQL plugins and the legal/user-facing documents
+// `./node_modules/biome-plugin-tanstack-query/rules/<file>.grit`, or by package
+// name through `biome-manifest.json` (Biome >= 2.6.2), so the tarball must
+// contain the GritQL plugins, the manifest and the legal/user-facing documents
 // and nothing else: no tests, fixtures, scripts, docs or tool configs.
 //
 // Runs `npm pack --dry-run --json` (which honours `files`, `.npmignore` and
@@ -32,8 +33,8 @@ export const REQUIRED_FILES = ['LICENSE', 'README.md', 'package.json']
  */
 export const ALLOWED_FILES = ['CHANGELOG.md']
 
-/** Generated presets (scripts/build-index.js) that consumers reference from biome.json. */
-export const REQUIRED_PRESETS = ['rules/index.grit', 'rules/recommended-strict.grit']
+/** Generated files (scripts/build-index.js) that consumers reference from biome.json. */
+export const REQUIRED_PRESETS = ['biome-manifest.json', 'rules/index.grit', 'rules/recommended-strict.grit']
 
 /**
  * Compares the files of a packed tarball with what this repository should ship.
@@ -60,9 +61,11 @@ function packedFiles() {
     stdio: ['ignore', 'pipe', 'inherit'],
     shell: process.platform === 'win32',
   })
-  const start = stdout.indexOf('[')
+  // npm <= 11 prints an array of reports, npm >= 12 an object keyed by package name.
+  const start = stdout.search(/^[[{]/m)
   if (start === -1) throw new Error(`npm pack did not print a JSON report:\n${stdout}`)
-  const [report] = JSON.parse(stdout.slice(start))
+  const parsed = JSON.parse(stdout.slice(start))
+  const [report] = Array.isArray(parsed) ? parsed : Object.values(parsed)
   return { name: `${report.name}@${report.version}`, size: report.size, files: report.files.map((file) => file.path) }
 }
 
@@ -92,7 +95,7 @@ function main() {
   console.error('✖ unexpected tarball contents')
   for (const file of missing) {
     const hint = REQUIRED_PRESETS.includes(file)
-      ? ' (generated preset: run `npm run build`)'
+      ? ' (generated: run `npm run build`)'
       : existsSync(join(ROOT, file))
         ? ' (exists on disk: check the "files" field in package.json / .npmignore)'
         : ' (missing from the repository)'

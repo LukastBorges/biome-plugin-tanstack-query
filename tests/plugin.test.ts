@@ -1,8 +1,15 @@
 import { readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { extractDefinitions, listRuleFiles, PRESETS, renderPreset } from '../scripts/build-index.js'
-import { RULES_DIR, runBiome } from './helpers/biome'
+import {
+  extractDefinitions,
+  listRuleFiles,
+  MANIFEST_FILE,
+  PRESETS,
+  renderManifest,
+  renderPreset,
+} from '../scripts/build-index.js'
+import { ROOT, RULES_DIR, runBiome } from './helpers/biome'
 import { listRuleFixtures, readExpectations, toKeys } from './helpers/fixtures'
 
 /**
@@ -33,6 +40,11 @@ describe('repository layout', () => {
   it.each(Object.keys(presets))('rules/%s.grit is up to date with the rule files', (name) => {
     const current = readFileSync(join(RULES_DIR, `${name}.grit`), 'utf8')
     expect(current, 'run `npm run build`').toBe(renderPreset(name))
+  })
+
+  it(`${MANIFEST_FILE} is up to date with the rule files`, () => {
+    const current = readFileSync(join(ROOT, MANIFEST_FILE), 'utf8')
+    expect(current, 'run `npm run build`').toBe(renderManifest())
   })
 })
 
