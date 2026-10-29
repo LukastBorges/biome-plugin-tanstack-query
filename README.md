@@ -26,8 +26,8 @@ Biome does not run ESLint plugins. It does run plugins written in [GritQL](https
 
 | `biome-plugin-tanstack-query` | Mirrors `@tanstack/eslint-plugin-query` | Requires `@biomejs/biome` |
 | ----------------------------- | --------------------------------------- | ------------------------- |
-| unreleased | `5.105.0` | `>= 2.5.2` |
-| `1.0.3` and later | `5.104.5` | `>= 2.5.2` |
+| `1.1.1` and later | `5.105.0` | `>= 2.5.2` |
+| `1.0.3` – `1.1.0` | `5.104.5` | `>= 2.5.2` |
 | `1.0.0` – `1.0.2` | `5.104.1` | `>= 2.5.2` |
 
 - Each row covers the plugin releases that mirror the same upstream version. The table is updated automatically on every release (`scripts/sync-version.js`).
