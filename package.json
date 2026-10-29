@@ -86,6 +86,6 @@
   },
   "upstream": {
     "package": "@tanstack/eslint-plugin-query",
-    "version": "5.104.5"
+    "version": "5.105.0"
   }
 }
