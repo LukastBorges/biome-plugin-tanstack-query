@@ -1,7 +1,7 @@
 // GENERATED FILE - DO NOT EDIT. Run `npm run build` to regenerate.
 //
 // biome-plugin-tanstack-query@1.1.0: "recommended" preset.
-// Mirrors the "recommended" config of @tanstack/eslint-plugin-query@5.104.5.
+// Mirrors the "recommended" config of @tanstack/eslint-plugin-query@5.105.0.
 //
 // Rules: exhaustive-deps, infinite-query-property-order, mutation-property-order, no-rest-destructuring, no-unstable-deps, no-void-query-fn, stable-query-client
 //

@@ -26,6 +26,7 @@ Biome does not run ESLint plugins. It does run plugins written in [GritQL](https
 
 | `biome-plugin-tanstack-query` | Mirrors `@tanstack/eslint-plugin-query` | Requires `@biomejs/biome` |
 | ----------------------------- | --------------------------------------- | ------------------------- |
+| unreleased | `5.105.0` | `>= 2.5.2` |
 | `1.0.3` and later | `5.104.5` | `>= 2.5.2` |
 | `1.0.0` – `1.0.2` | `5.104.1` | `>= 2.5.2` |
 
